@@ -55,7 +55,6 @@ fn main() {
     let mut modifiers = ModifiersState::empty();
     let mut cursor_x = 0.0;
     let mut cursor_y = 0.0;
-    let mut need_redraw = true;
 
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16)));
@@ -96,18 +95,18 @@ fn main() {
                                 omnibox.defocus();
                             }
                         }
-                        need_redraw = true;
+                        window.request_redraw();
                     } else if clicked_index == tab_manager.tabs.len() {
                         // Clicou no botão +
                         tab_manager.new_tab("https://magma.browser/local_cache".to_string());
                         _webview = None;
                         _webview = Some(engine::builder::build_webview(&window, &ephemeral_context, &adblock_engine, &tab_manager.get_active_tab().unwrap().url, browser_config.hardware_acceleration, ipc_tx.clone()).expect("Falha"));
                         omnibox.defocus();
-                        need_redraw = true;
+                        window.request_redraw();
                     }
                 } else if cursor_y < ui::CHROME_HEIGHT as f64 {
                     omnibox.focus(&tab_manager.get_active_tab().unwrap().url);
-                    need_redraw = true;
+                    window.request_redraw();
                 }
             }
             Event::WindowEvent { event: WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, physical_key, .. }, .. }, .. } => {
@@ -137,14 +136,14 @@ fn main() {
                         }
                         PhysicalKey::Code(winit::keyboard::KeyCode::KeyL) => {
                             omnibox.focus(&tab_manager.get_active_tab().unwrap().url);
-                            need_redraw = true;
+                            window.request_redraw();
                         }
                         PhysicalKey::Code(winit::keyboard::KeyCode::KeyT) => {
                             tab_manager.new_tab("https://magma.browser/local_cache".to_string());
                             _webview = None;
                             _webview = Some(engine::builder::build_webview(&window, &ephemeral_context, &adblock_engine, &tab_manager.get_active_tab().unwrap().url, browser_config.hardware_acceleration, ipc_tx.clone()).expect("Falha"));
                             omnibox.defocus();
-                            need_redraw = true;
+                            window.request_redraw();
                         }
                         PhysicalKey::Code(winit::keyboard::KeyCode::KeyW) => {
                             let idx = tab_manager.active_index;
@@ -152,7 +151,7 @@ fn main() {
                             _webview = None;
                             _webview = Some(engine::builder::build_webview(&window, &ephemeral_context, &adblock_engine, &tab_manager.get_active_tab().unwrap().url, browser_config.hardware_acceleration, ipc_tx.clone()).expect("Falha"));
                             omnibox.defocus();
-                            need_redraw = true;
+                            window.request_redraw();
                         }
                         PhysicalKey::Code(winit::keyboard::KeyCode::Tab) => {
                             let mut next = tab_manager.active_index + 1;
@@ -165,7 +164,7 @@ fn main() {
                                 _webview = None;
                                 _webview = Some(engine::builder::build_webview(&window, &ephemeral_context, &adblock_engine, &tab_manager.get_active_tab().unwrap().url, browser_config.hardware_acceleration, ipc_tx.clone()).expect("Falha"));
                                 omnibox.defocus();
-                                need_redraw = true;
+                                window.request_redraw();
                             }
                         }
                         _ => {}
@@ -174,7 +173,7 @@ fn main() {
                     match logical_key.as_ref() {
                         Key::Named(NamedKey::Escape) => {
                             omnibox.defocus();
-                            need_redraw = true;
+                            window.request_redraw();
                         }
                         Key::Named(NamedKey::Enter) => {
                             let final_url = ui::omnibox::resolve_navigation_target(&omnibox.input, &browser_config.search_engine);
@@ -186,20 +185,20 @@ fn main() {
                                 }
                             }
                             omnibox.defocus();
-                            need_redraw = true;
+                            window.request_redraw();
                         }
                         Key::Named(NamedKey::Backspace) => {
                             omnibox.backspace();
-                            need_redraw = true;
+                            window.request_redraw();
                         }
-                        Key::Named(NamedKey::ArrowLeft) => { omnibox.arrow_left(); need_redraw = true; }
-                        Key::Named(NamedKey::ArrowRight) => { omnibox.arrow_right(); need_redraw = true; }
-                        Key::Named(NamedKey::ArrowUp) => { omnibox.arrow_up(); need_redraw = true; }
-                        Key::Named(NamedKey::ArrowDown) => { omnibox.arrow_down(); need_redraw = true; }
+                        Key::Named(NamedKey::ArrowLeft) => { omnibox.arrow_left(); window.request_redraw(); }
+                        Key::Named(NamedKey::ArrowRight) => { omnibox.arrow_right(); window.request_redraw(); }
+                        Key::Named(NamedKey::ArrowUp) => { omnibox.arrow_up(); window.request_redraw(); }
+                        Key::Named(NamedKey::ArrowDown) => { omnibox.arrow_down(); window.request_redraw(); }
                         Key::Character(c) => {
                             if let Some(ch) = c.chars().next() {
                                 omnibox.insert_char(ch);
-                                need_redraw = true;
+                                window.request_redraw();
                             }
                         }
                         _ => {}
@@ -212,7 +211,7 @@ fn main() {
                         NonZeroU32::new(size.width).unwrap(),
                         NonZeroU32::new(size.height).unwrap(),
                     );
-                    need_redraw = true;
+                    window.request_redraw();
                     
                     if let Some(wv) = _webview.as_ref() {
                         let bounds = wry::Rect {
@@ -225,6 +224,25 @@ fn main() {
                     }
                 }
             }
+            Event::WindowEvent { window_id, event: WindowEvent::RedrawRequested, .. } => {
+                if window_id == window.id() {
+                    let size = window.inner_size();
+                    if size.width > 0 && size.height > 0 {
+                        if let Ok(mut buffer) = sb_surface.buffer_mut() {
+                            // Limpa a tela inteira (incluindo onde os snapshots vao depois da TabBar)
+                            for index in 0..(size.width * size.height) {
+                                buffer[index as usize] = 0xFF_12_12_12; 
+                            }
+                            
+                            // Renderiza barra de abas
+                            ui::render_tab_bar(&mut buffer, size.width as usize, &tab_manager.tabs, tab_manager.active_index);
+                            ui::omnibox::render_omnibox(&mut buffer, size.width as usize, &omnibox, &tab_manager.get_active_tab().unwrap().url);
+                            
+                            let _ = buffer.present();
+                        }
+                    }
+                }
+            }
             Event::AboutToWait => {
                 // Checar IPC Wry
                 while let Ok(msg) = ipc_rx.try_recv() {
@@ -233,14 +251,14 @@ fn main() {
                         let active = tab_manager.get_active_tab().unwrap();
                         if active.title != new_title {
                             tab_manager.update_active_title(new_title);
-                            need_redraw = true;
+                            window.request_redraw();
                         }
                     } else if let Some(url) = msg.strip_prefix("url:") {
                         let new_url = url.to_string();
                         let active = tab_manager.get_active_tab().unwrap();
                         if active.url != new_url {
                             tab_manager.update_active_url(new_url);
-                            need_redraw = true;
+                            window.request_redraw();
                         }
                     } else if let Some(payload) = msg.strip_prefix("save_config:") {
                         let mut hw = browser_config.hardware_acceleration;
@@ -260,25 +278,6 @@ fn main() {
                             println!("⚠️ Aceleração de Hardware alterada. Reinicie o navegador para aplicar.");
                         }
                     }
-                }
-                
-                if need_redraw {
-                    let size = window.inner_size();
-                    if size.width > 0 && size.height > 0 {
-                        if let Ok(mut buffer) = sb_surface.buffer_mut() {
-                            // Limpa a tela inteira (incluindo onde os snapshots vao depois da TabBar)
-                            for index in 0..(size.width * size.height) {
-                                buffer[index as usize] = 0xFF_12_12_12; 
-                            }
-                            
-                            // Renderiza barra de abas
-                            ui::render_tab_bar(&mut buffer, size.width as usize, &tab_manager.tabs, tab_manager.active_index);
-                            ui::omnibox::render_omnibox(&mut buffer, size.width as usize, &omnibox, &tab_manager.get_active_tab().unwrap().url);
-                            
-                            let _ = buffer.present();
-                        }
-                    }
-                    need_redraw = false;
                 }
                 
                 // Ostrimmer
