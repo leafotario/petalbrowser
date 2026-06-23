@@ -128,7 +128,7 @@ fn main() {
                     }
                 }
             }
-            Event::WindowEvent { event: WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, physical_key, .. }, .. }, .. } => {
+            Event::WindowEvent { event: WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, physical_key, text, .. }, .. }, .. } => {
                 let ctrl = modifiers.control_key();
                 let shift = modifiers.shift_key();
                 
@@ -217,13 +217,16 @@ fn main() {
                         Key::Named(NamedKey::ArrowRight) => { omnibox.arrow_right(); window.request_redraw(); }
                         Key::Named(NamedKey::ArrowUp) => { omnibox.arrow_up(); window.request_redraw(); }
                         Key::Named(NamedKey::ArrowDown) => { omnibox.arrow_down(); window.request_redraw(); }
-                        Key::Character(c) => {
-                            if let Some(ch) = c.chars().next() {
-                                omnibox.insert_char(ch);
+                        _ => {
+                            if let Some(t) = text {
+                                for c in t.chars() {
+                                    if !c.is_control() {
+                                        omnibox.insert_char(c);
+                                    }
+                                }
                                 window.request_redraw();
                             }
                         }
-                        _ => {}
                     }
                 }
             }
