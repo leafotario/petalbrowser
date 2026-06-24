@@ -16,9 +16,36 @@ impl BrowserConfig {
     }
 
     fn path() -> PathBuf {
-        let mut p = std::env::current_dir().unwrap_or_default();
-        p.push(".magma_browser_config");
-        p
+        let mut base = if cfg!(target_os = "windows") {
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                PathBuf::from(appdata)
+            } else {
+                std::env::current_dir().unwrap_or_default()
+            }
+        } else if cfg!(target_os = "macos") {
+            if let Ok(home) = std::env::var("HOME") {
+                let mut p = PathBuf::from(home);
+                p.push("Library");
+                p.push("Application Support");
+                p
+            } else {
+                std::env::current_dir().unwrap_or_default()
+            }
+        } else {
+            if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
+                PathBuf::from(xdg_config)
+            } else if let Ok(home) = std::env::var("HOME") {
+                let mut p = PathBuf::from(home);
+                p.push(".config");
+                p
+            } else {
+                std::env::current_dir().unwrap_or_default()
+            }
+        };
+        base.push("MagmaBrowser");
+        let _ = fs::create_dir_all(&base);
+        base.push("config.ini");
+        base
     }
 
     pub fn load() -> Self {
@@ -37,15 +64,17 @@ impl BrowserConfig {
                     }
                 }
             }
+        } else {
+            let _ = config.save();
         }
         config
     }
 
-    pub fn save(&self) {
+    pub fn save(&self) -> Result<(), String> {
         let content = format!(
             "search_engine={}\nhardware_acceleration={}\n",
             self.search_engine, self.hardware_acceleration
         );
-        let _ = fs::write(Self::path(), content);
+        fs::write(Self::path(), content).map_err(|e| format!("Erro de I/O ao salvar config: {}", e))
     }
 }

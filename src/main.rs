@@ -434,7 +434,9 @@ fn main() {
                         let hw_changed = hw != browser_config.hardware_acceleration;
                         browser_config.hardware_acceleration = hw;
                         browser_config.search_engine = search;
-                        browser_config.save();
+                        if let Err(e) = browser_config.save() {
+                            println!("Erro crítico ao salvar preferências: {}", e);
+                        }
                         settings_window = None;
                         if hw_changed {
                             println!("⚠️ Aceleração de Hardware alterada. Reinicie o navegador para aplicar.");

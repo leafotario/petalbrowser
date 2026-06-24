@@ -55,6 +55,10 @@ pub fn get_settings_html(config: &BrowserConfig) -> String {
         <small style="display:block;margin-top:5px;color:#888;">Use {{}} onde a pesquisa deve ser inserida.</small>
     </div>
 
+    <div style="margin-top: 15px; margin-bottom: 20px; font-size: 0.85em; color: #888;">
+        <i>ℹ️ As configurações são persistidas em seu Perfil Local (AppData, XDG, ou Home). O diretório de execução atual não afeta o salvamento.</i>
+    </div>
+
     <button onclick="save()">Salvar e Fechar</button>
 
     <script>
