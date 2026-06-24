@@ -1,27 +1,52 @@
 use std::time::{Duration, Instant};
 
+const MEASURE_COOLDOWN: Duration = Duration::from_secs(5);
 const TRIM_COOLDOWN: Duration = Duration::from_secs(45);
 const EMERGENCY_RSS_CEILING_MB: usize = 500;
 
 #[derive(Debug, PartialEq)]
 pub enum TrimAction { None, EmergencyCrash }
 
-pub struct OsTrimmer { last_trim: Option<Instant> }
+pub struct OsTrimmer { 
+    last_measurement: Option<Instant>,
+    last_trim: Option<Instant>,
+}
 
 impl OsTrimmer {
-    pub fn new() -> Self { Self { last_trim: None } }
+    pub fn new() -> Self { Self { last_measurement: None, last_trim: None } }
     pub fn try_trim(&mut self, webview: Option<&wry::WebView>) -> Result<TrimAction, String> {
-        if let Some(wv) = webview {
-            let rss_bytes = get_webview_rss(wv).unwrap_or(0);
-            if rss_bytes > (EMERGENCY_RSS_CEILING_MB * 1024 * 1024) { return Ok(TrimAction::EmergencyCrash); }
-        }
         let now = Instant::now();
-        if let Some(last) = self.last_trim { if now.duration_since(last) < TRIM_COOLDOWN { return Ok(TrimAction::None); } }
-        self.last_trim = Some(now);
-        let _ = execute_host_trim();
-        #[cfg(target_os = "windows")]
-        if let Some(wv) = webview { let _ = execute_webview_trim_windows(wv); }
-        Ok(TrimAction::None)
+        
+        let should_measure = match self.last_measurement {
+            Some(last) => now.duration_since(last) >= MEASURE_COOLDOWN,
+            None => true,
+        };
+
+        let mut action = TrimAction::None;
+
+        if should_measure {
+            self.last_measurement = Some(now);
+            if let Some(wv) = webview {
+                let rss_bytes = get_webview_rss(wv).unwrap_or(0);
+                if rss_bytes > (EMERGENCY_RSS_CEILING_MB * 1024 * 1024) { 
+                    action = TrimAction::EmergencyCrash; 
+                }
+            }
+        }
+
+        let should_trim = match self.last_trim {
+            Some(last) => now.duration_since(last) >= TRIM_COOLDOWN,
+            None => true,
+        };
+
+        if should_trim {
+            self.last_trim = Some(now);
+            let _ = execute_host_trim();
+            #[cfg(target_os = "windows")]
+            if let Some(wv) = webview { let _ = execute_webview_trim_windows(wv); }
+        }
+
+        Ok(action)
     }
 }
 
