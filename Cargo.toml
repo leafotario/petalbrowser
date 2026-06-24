@@ -14,12 +14,11 @@ wry = "0.35"
 winit = { version = "0.29", features = ["rwh_05"] }
 
 crossbeam-channel = "0.5"
-rusqlite = { version = "0.31", features = ["bundled"] }
-memmap2 = "0.9"
+
 
 # Descarte da WebView e Renderização Estática
 softbuffer = "0.3"
-lz4_flex = "0.11"
+
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = [
