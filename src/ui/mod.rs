@@ -8,6 +8,48 @@ pub const CHROME_HEIGHT: u32 = TABBAR_HEIGHT + OMNIBOX_HEIGHT;
 
 use crate::fsm::tab_manager::Tab;
 
+pub const TAB_WIDTH: usize = 220;
+pub const TAB_MARGIN_LEFT: usize = 8;
+
+pub enum TabHit {
+    Tab(usize),
+    CloseButton(usize),
+    NewTabButton,
+    None,
+}
+
+pub fn hit_test_tab_bar(cursor_x: f64, num_tabs: usize, window_width: f64) -> TabHit {
+    let x = cursor_x as usize;
+    
+    for i in 0..num_tabs {
+        let start_x = i * TAB_WIDTH + TAB_MARGIN_LEFT;
+        if start_x >= window_width as usize { break; }
+        
+        let w = if start_x + TAB_WIDTH > window_width as usize { window_width as usize - start_x } else { TAB_WIDTH };
+        let end_x = start_x + w;
+        
+        if x >= start_x && x < end_x {
+            let close_x = start_x + w - 24;
+            // The close button 'x' is at close_x
+            if x >= close_x && x < start_x + w {
+                return TabHit::CloseButton(i);
+            } else {
+                return TabHit::Tab(i);
+            }
+        }
+    }
+    
+    let plus_x = num_tabs * TAB_WIDTH + 16;
+    if plus_x < window_width as usize {
+        // Roughly 16px wide hitbox for the + button
+        if x >= plus_x.saturating_sub(4) && x <= plus_x + 16 {
+            return TabHit::NewTabButton;
+        }
+    }
+    
+    TabHit::None
+}
+
 /// Limpa o buffer com uma cor de fundo
 pub fn clear_rect(buffer: &mut [u32], buf_width: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
     for row in y..(y + h) {
@@ -92,16 +134,14 @@ pub fn render_tab_bar(buffer: &mut [u32], width: usize, tabs: &[Tab], active_ind
     // Title bar background
     clear_rect(buffer, width, 0, 0, width, TABBAR_HEIGHT as usize, bg_color);
     
-    let tab_width = 220;
-    
     for (i, tab) in tabs.iter().enumerate() {
-        let start_x = i * tab_width + 8; // Margin from left
+        let start_x = i * TAB_WIDTH + TAB_MARGIN_LEFT; // Margin from left
         if start_x >= width { break; } 
         
         let is_active = i == active_index;
         let t_bg = if is_active { active_bg } else { inactive_bg };
         
-        let w = if start_x + tab_width > width { width - start_x } else { tab_width };
+        let w = if start_x + TAB_WIDTH > width { width - start_x } else { TAB_WIDTH };
         
         // Tab shape: top rounded, bottom flat. We can draw it row by row or use clear_rect and carve.
         // We'll draw beveled top corners manually by drawing rectangles.
@@ -130,7 +170,7 @@ pub fn render_tab_bar(buffer: &mut [u32], width: usize, tabs: &[Tab], active_ind
     }
     
     // Botão nova aba '+'
-    let plus_x = tabs.len() * tab_width + 16;
+    let plus_x = tabs.len() * TAB_WIDTH + 16;
     if plus_x < width {
         let plus_y = 12;
         draw_char(buffer, width, plus_x, plus_y, '+', fg_color);

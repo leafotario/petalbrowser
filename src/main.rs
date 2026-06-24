@@ -119,13 +119,9 @@ fn main() {
 
                 // Rastreio de cliques na barra de abas
                 if cursor_y < ui::TABBAR_HEIGHT as f64 {
-                    let tab_width = 200.0;
-                    let clicked_index = (cursor_x / tab_width).floor() as usize;
-                    
-                    if clicked_index < tab_manager.tabs.len() {
-                        // Verifica se clicou no X de fechar (últimos 20px)
-                        let relative_x = cursor_x % tab_width;
-                        if relative_x > tab_width - 25.0 {
+                    let hit = ui::hit_test_tab_bar(cursor_x, tab_manager.tabs.len(), window.inner_size().width as f64);
+                    match hit {
+                        ui::TabHit::CloseButton(clicked_index) => {
                             if let Some(removed_id) = tab_manager.close_tab(clicked_index) {
                                 webviews.remove(&removed_id);
                             }
@@ -145,7 +141,9 @@ fn main() {
                                 ).unwrap();
                                 webviews.insert(active.id, new_wv);
                             }
-                        } else {
+                            window.request_redraw();
+                        }
+                        ui::TabHit::Tab(clicked_index) => {
                             let old_active = tab_manager.get_active_tab().unwrap().id;
                             if tab_manager.switch_tab(clicked_index) {
                                 let new_active = tab_manager.get_active_tab().unwrap().id;
@@ -157,27 +155,29 @@ fn main() {
                                     wv.focus();
                                 }
                                 omnibox.defocus();
+                                window.request_redraw();
                             }
                         }
-                        window.request_redraw();
-                    } else if clicked_index == tab_manager.tabs.len() {
-                        tab_manager.new_tab("https://petal.browser/local_cache".to_string());
-                        let new_tab = tab_manager.get_active_tab().unwrap();
-                        let new_wv = engine::builder::build_webview(
-                            &window,
-                            &ephemeral_context,
-                            &adblock_engine,
-                            &new_tab.url,
-                            new_tab.id,
-                            browser_config.hardware_acceleration,
-                            ipc_tx.clone(),
-                        ).unwrap();
-                        for wv in webviews.values() {
-                            wv.set_visible(false);
+                        ui::TabHit::NewTabButton => {
+                            tab_manager.new_tab("https://petal.browser/local_cache".to_string());
+                            let new_tab = tab_manager.get_active_tab().unwrap();
+                            let new_wv = engine::builder::build_webview(
+                                &window,
+                                &ephemeral_context,
+                                &adblock_engine,
+                                &new_tab.url,
+                                new_tab.id,
+                                browser_config.hardware_acceleration,
+                                ipc_tx.clone(),
+                            ).unwrap();
+                            for wv in webviews.values() {
+                                wv.set_visible(false);
+                            }
+                            webviews.insert(new_tab.id, new_wv);
+                            omnibox.defocus();
+                            window.request_redraw();
                         }
-                        webviews.insert(new_tab.id, new_wv);
-                        omnibox.defocus();
-                        window.request_redraw();
+                        ui::TabHit::None => {}
                     }
                 } else if cursor_y < ui::CHROME_HEIGHT as f64 {
                     let w = window.inner_size().width as f64;
