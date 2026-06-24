@@ -19,6 +19,7 @@ crossbeam-channel = "0.5"
 # Descarte da WebView e Renderização Estática
 softbuffer = "0.3"
 arboard = "3.6.1"
+image = { version = "0.24", default-features = false, features = ["png"] }
 
 
 [target.'cfg(target_os = "windows")'.dependencies]

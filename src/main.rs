@@ -16,12 +16,27 @@ use winit::{
     window::WindowBuilder,
 };
 
+fn load_icon() -> Option<winit::window::Icon> {
+    let icon_bytes = include_bytes!("../Petal_icon.png");
+    let image = image::load_from_memory_with_format(icon_bytes, image::ImageFormat::Png).ok()?;
+    let image = image.into_rgba8();
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+    winit::window::Icon::from_rgba(rgba, width, height).ok()
+}
+
 fn main() {
     let event_loop = EventLoop::new().unwrap();
 
-    let window = WindowBuilder::new()
+    let mut window_builder = WindowBuilder::new()
         .with_title("Petal Browser [Bare-Metal Edition]")
-        .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
+        .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
+
+    if let Some(icon) = load_icon() {
+        window_builder = window_builder.with_window_icon(Some(icon));
+    }
+
+    let window = window_builder
         .build(&event_loop)
         .expect("Falha arquitetural crítica.");
 
@@ -181,9 +196,13 @@ fn main() {
                     } else if cursor_x > w - 46.0 {
                         // Settings
                         if settings_window.is_none() {
-                            let sw = WindowBuilder::new()
+                            let mut sw_builder = WindowBuilder::new()
                                 .with_title("Configurações do Petal")
-                                .with_inner_size(winit::dpi::LogicalSize::new(450.0, 350.0))
+                                .with_inner_size(winit::dpi::LogicalSize::new(450.0, 350.0));
+                            if let Some(icon) = load_icon() {
+                                sw_builder = sw_builder.with_window_icon(Some(icon));
+                            }
+                            let sw = sw_builder
                                 .build(elwt)
                                 .unwrap();
                             let tx = ipc_tx.clone();
@@ -212,9 +231,13 @@ fn main() {
                     match physical_key {
                         PhysicalKey::Code(winit::keyboard::KeyCode::Comma) => {
                             if settings_window.is_none() {
-                                let sw = WindowBuilder::new()
+                                let mut sw_builder = WindowBuilder::new()
                                     .with_title("Configurações do Petal")
-                                    .with_inner_size(winit::dpi::LogicalSize::new(450.0, 350.0))
+                                    .with_inner_size(winit::dpi::LogicalSize::new(450.0, 350.0));
+                                if let Some(icon) = load_icon() {
+                                    sw_builder = sw_builder.with_window_icon(Some(icon));
+                                }
+                                let sw = sw_builder
                                     .build(elwt)
                                     .unwrap();
                                 let tx = ipc_tx.clone();

@@ -1,5 +1,9 @@
 # 🌸 Petal Browser
 
+<p align="center">
+  <img src="Petal_logo.png" alt="Petal Browser Logo" width="400">
+</p>
+
 Bem-vindo ao repositório do **Petal**. Se você cansou de navegadores que devoram toda a memória RAM do seu computador só por abrirem duas abas, você está no lugar certo.
 
 ## 📖 Para Seres Humanos: O que é o Petal?
