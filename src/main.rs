@@ -411,7 +411,7 @@ fn main() {
                             
                             // Renderiza barra de abas
                             ui::render_tab_bar(&mut buffer, size.width as usize, &tab_manager.tabs, tab_manager.active_index);
-                            ui::omnibox::render_omnibox(&mut buffer, size.width as usize, &omnibox, &tab_manager.get_active_tab().unwrap().url);
+                            ui::omnibox::render_omnibox(&mut buffer, size.width as usize, &mut omnibox, &tab_manager.get_active_tab().unwrap().url);
                             
                             let _ = buffer.present();
                         }

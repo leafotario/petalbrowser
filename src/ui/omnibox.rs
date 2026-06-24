@@ -7,6 +7,7 @@ pub struct OmniboxState {
     pub select_all_on_type: bool,
     pub history: VecDeque<String>,
     pub history_index: Option<usize>,
+    pub scroll_offset: usize,
 }
 
 impl OmniboxState {
@@ -18,6 +19,7 @@ impl OmniboxState {
             select_all_on_type: false,
             history: VecDeque::with_capacity(16),
             history_index: None,
+            scroll_offset: 0,
         }
     }
 
@@ -27,12 +29,14 @@ impl OmniboxState {
         self.cursor_position = self.input.len();
         self.select_all_on_type = true;
         self.history_index = None;
+        self.scroll_offset = 0;
     }
 
     pub fn defocus(&mut self) {
         self.is_focused = false;
         self.select_all_on_type = false;
         self.history_index = None;
+        self.scroll_offset = 0;
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -153,6 +157,19 @@ impl OmniboxState {
             }
         }
     }
+
+    pub fn update_scroll(&mut self, visible_chars: usize) {
+        if !self.is_focused {
+            self.scroll_offset = 0;
+            return;
+        }
+        let cursor_char_idx = self.input[..self.cursor_position].chars().count();
+        if cursor_char_idx < self.scroll_offset {
+            self.scroll_offset = cursor_char_idx;
+        } else if cursor_char_idx >= self.scroll_offset + visible_chars {
+            self.scroll_offset = cursor_char_idx - visible_chars + 1;
+        }
+    }
 }
 
 fn minimal_encode(input: &str) -> String {
@@ -187,7 +204,7 @@ pub fn resolve_navigation_target(input: &str, search_engine: &str) -> String {
     search_engine.replace("{}", &minimal_encode(trimmed))
 }
 
-pub fn render_omnibox(buffer: &mut [u32], width: usize, state: &OmniboxState, current_url: &str) {
+pub fn render_omnibox(buffer: &mut [u32], width: usize, state: &mut OmniboxState, current_url: &str) {
     let bg_color = 0xFF_28_28_28; // Matches active tab background
     crate::ui::clear_rect(buffer, width, 0, crate::ui::TABBAR_HEIGHT as usize, width, crate::ui::OMNIBOX_HEIGHT as usize, bg_color);
 
@@ -221,20 +238,28 @@ pub fn render_omnibox(buffer: &mut [u32], width: usize, state: &OmniboxState, cu
     let field_bg = if state.is_focused { 0xFF_00_00_00 } else { 0xFF_11_11_11 };
     crate::ui::draw_beveled_rect(buffer, width, omnibox_x, nav_y, omnibox_w, button_h, field_bg);
 
+    let visible_chars = omnibox_w.saturating_sub(20) / 8;
+    state.update_scroll(visible_chars);
+
     let display_text = if state.is_focused { &state.input } else { current_url };
+    let chars: Vec<char> = display_text.chars().collect();
+    let start_idx = if state.is_focused { state.scroll_offset.min(chars.len()) } else { 0 };
+    let visible_text: String = chars[start_idx..].iter().collect();
 
     if state.is_focused && state.select_all_on_type && !display_text.is_empty() {
-        let sel_w = (display_text.chars().count() * 8).min(omnibox_w - 20);
+        let sel_w = (visible_text.chars().count() * 8).min(omnibox_w - 20);
         crate::ui::clear_rect(buffer, width, omnibox_x + 10, nav_y + 7, sel_w, 16, 0xFF_00_55_AA);
     }
 
-    crate::ui::draw_string(buffer, width, omnibox_x + 10, nav_y + 7, display_text, 0xFF_E0_E0_E0, omnibox_w.saturating_sub(20));
+    crate::ui::draw_string(buffer, width, omnibox_x + 10, nav_y + 7, &visible_text, 0xFF_E0_E0_E0, omnibox_w.saturating_sub(20));
 
     if state.is_focused && !state.select_all_on_type {
         let chars_before_cursor = state.input[..state.cursor_position].chars().count();
-        let cursor_x = omnibox_x + 10 + (chars_before_cursor * 8);
-        if cursor_x < omnibox_x + omnibox_w - 10 {
-            crate::ui::clear_rect(buffer, width, cursor_x, nav_y + 7, 2, 16, 0xFF_FF_FF_FF);
+        if chars_before_cursor >= state.scroll_offset {
+            let cursor_x = omnibox_x + 10 + ((chars_before_cursor - state.scroll_offset) * 8);
+            if cursor_x < omnibox_x + omnibox_w - 10 {
+                crate::ui::clear_rect(buffer, width, cursor_x, nav_y + 7, 2, 16, 0xFF_FF_FF_FF);
+            }
         }
     }
 }

@@ -57,9 +57,12 @@ pub fn draw_char(buffer: &mut [u32], buf_width: usize, x: usize, y: usize, c: ch
         let offset = py * buf_width + x;
         for col_idx in 0..8 {
             if (row_val & (1 << (7 - col_idx))) != 0 {
-                let px = offset + col_idx;
-                if px < buffer.len() {
-                    buffer[px] = color;
+                let cx = x + col_idx;
+                if cx < buf_width {
+                    let px = offset + col_idx;
+                    if px < buffer.len() {
+                        buffer[px] = color;
+                    }
                 }
             }
         }
@@ -72,11 +75,6 @@ pub fn draw_string(buffer: &mut [u32], buf_width: usize, x: usize, y: usize, tex
     let char_width = 8;
     for c in text.chars() {
         if current_x + char_width > x + max_width {
-            // Truncamento (desenhar reticências seria legal, mas vamos apenas cortar por simplicidade)
-            if current_x >= 16 {
-                draw_char(buffer, buf_width, current_x - 16, y, '.', color);
-                draw_char(buffer, buf_width, current_x - 8, y, '.', color);
-            }
             break;
         }
         draw_char(buffer, buf_width, current_x, y, c, color);
