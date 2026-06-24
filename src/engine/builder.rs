@@ -33,6 +33,7 @@ pub fn build_webview(
     _ephemeral_context: &EphemeralWebContext,
     adblock_engine: &AdblockEngine,
     url: &str,
+    tab_id: u32,
     hardware_acceleration: bool,
     ipc_tx: crossbeam_channel::Sender<String>,
 ) -> wry::Result<WebView> {
@@ -54,7 +55,7 @@ pub fn build_webview(
     builder = builder.with_on_page_load_handler(move |event, url| {
         // Envia apenas quando o carregamento termina ou muda
         if let wry::PageLoadEvent::Finished = event {
-            let _ = tx_nav.send(format!("url:{}", url));
+            let _ = tx_nav.send(format!("{}|url|{}", tab_id, url));
         }
     });
 
@@ -64,17 +65,18 @@ pub fn build_webview(
         let _ = ipc_tx.send(msg);
     });
 
-    builder = builder.with_initialization_script(r#"
-        (function() {
-            window.ipc.postMessage('title:' + document.title);
-            new MutationObserver(function(mutations) {
-                window.ipc.postMessage('title:' + document.title);
-            }).observe(
+    let init_script = format!(r#"
+        (function() {{
+            window.ipc.postMessage('{}|title|' + document.title);
+            new MutationObserver(function(mutations) {{
+                window.ipc.postMessage('{}|title|' + document.title);
+            }}).observe(
                 document.querySelector('title') || document.head,
-                { subtree: true, characterData: true, childList: true }
+                {{ subtree: true, characterData: true, childList: true }}
             );
-        })();
-    "#);
+        }})();
+    "#, tab_id, tab_id);
+    builder = builder.with_initialization_script(&init_script);
 
     #[cfg(target_os = "windows")]
     {

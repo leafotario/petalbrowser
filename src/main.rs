@@ -39,14 +39,18 @@ fn main() {
 
     let (ipc_tx, ipc_rx) = unbounded::<String>();
 
-    let mut _webview = Some(engine::builder::build_webview(
+    let mut webviews = std::collections::HashMap::<u32, wry::WebView>::new();
+    let initial_tab = tab_manager.get_active_tab().unwrap();
+    let initial_wv = engine::builder::build_webview(
         &window,
         &ephemeral_context,
         &adblock_engine,
-        &tab_manager.get_active_tab().unwrap().url,
+        &initial_tab.url,
+        initial_tab.id,
         browser_config.hardware_acceleration,
         ipc_tx.clone(),
-    ).expect("Falha ao instanciar WebView."));
+    ).expect("Falha ao instanciar WebView.");
+    webviews.insert(initial_tab.id, initial_wv);
 
     let mut settings_window: Option<(winit::window::Window, wry::WebView)> = None;
 
@@ -106,26 +110,56 @@ fn main() {
                         // Verifica se clicou no X de fechar (últimos 20px)
                         let relative_x = cursor_x % tab_width;
                         if relative_x > tab_width - 25.0 {
-                            tab_manager.close_tab(clicked_index);
-                            if let Some(wv) = _webview.as_ref() {
-                                let _ = wv.load_url(&tab_manager.get_active_tab().unwrap().url);
+                            if let Some(removed_id) = tab_manager.close_tab(clicked_index) {
+                                webviews.remove(&removed_id);
+                            }
+                            let active = tab_manager.get_active_tab().unwrap();
+                            if let Some(wv) = webviews.get(&active.id) {
+                                wv.set_visible(true);
+                                wv.focus();
+                            } else {
+                                let new_wv = engine::builder::build_webview(
+                                    &window,
+                                    &ephemeral_context,
+                                    &adblock_engine,
+                                    &active.url,
+                                    active.id,
+                                    browser_config.hardware_acceleration,
+                                    ipc_tx.clone(),
+                                ).unwrap();
+                                webviews.insert(active.id, new_wv);
                             }
                         } else {
-                            // Troca de Aba (Usando a mesma webview viva)
+                            let old_active = tab_manager.get_active_tab().unwrap().id;
                             if tab_manager.switch_tab(clicked_index) {
-                                if let Some(wv) = _webview.as_ref() {
-                                    let _ = wv.load_url(&tab_manager.get_active_tab().unwrap().url);
+                                let new_active = tab_manager.get_active_tab().unwrap().id;
+                                if let Some(wv) = webviews.get(&old_active) {
+                                    wv.set_visible(false);
+                                }
+                                if let Some(wv) = webviews.get(&new_active) {
+                                    wv.set_visible(true);
+                                    wv.focus();
                                 }
                                 omnibox.defocus();
                             }
                         }
                         window.request_redraw();
                     } else if clicked_index == tab_manager.tabs.len() {
-                        // Clicou no botão +
                         tab_manager.new_tab("https://magma.browser/local_cache".to_string());
-                        if let Some(wv) = _webview.as_ref() {
-                            let _ = wv.load_url(&tab_manager.get_active_tab().unwrap().url);
+                        let new_tab = tab_manager.get_active_tab().unwrap();
+                        let new_wv = engine::builder::build_webview(
+                            &window,
+                            &ephemeral_context,
+                            &adblock_engine,
+                            &new_tab.url,
+                            new_tab.id,
+                            browser_config.hardware_acceleration,
+                            ipc_tx.clone(),
+                        ).unwrap();
+                        for wv in webviews.values() {
+                            wv.set_visible(false);
                         }
+                        webviews.insert(new_tab.id, new_wv);
                         omnibox.defocus();
                         window.request_redraw();
                     }
@@ -133,13 +167,16 @@ fn main() {
                     let w = window.inner_size().width as f64;
                     if cursor_x >= 10.0 && cursor_x < 46.0 {
                         // Back
-                        if let Some(wv) = _webview.as_ref() { let _ = wv.evaluate_script("window.history.back()"); }
+                        let active_id = tab_manager.get_active_tab().unwrap().id;
+                        if let Some(wv) = webviews.get(&active_id) { let _ = wv.evaluate_script("window.history.back()"); }
                     } else if cursor_x >= 52.0 && cursor_x < 88.0 {
                         // Forward
-                        if let Some(wv) = _webview.as_ref() { let _ = wv.evaluate_script("window.history.forward()"); }
+                        let active_id = tab_manager.get_active_tab().unwrap().id;
+                        if let Some(wv) = webviews.get(&active_id) { let _ = wv.evaluate_script("window.history.forward()"); }
                     } else if cursor_x >= 94.0 && cursor_x < 130.0 {
                         // Refresh
-                        if let Some(wv) = _webview.as_ref() { let _ = wv.evaluate_script("location.reload()"); }
+                        let active_id = tab_manager.get_active_tab().unwrap().id;
+                        if let Some(wv) = webviews.get(&active_id) { let _ = wv.evaluate_script("location.reload()"); }
                     } else if cursor_x > w - 46.0 {
                         // Settings
                         println!("Settings clicado!");
@@ -181,17 +218,43 @@ fn main() {
                         }
                         PhysicalKey::Code(winit::keyboard::KeyCode::KeyT) => {
                             tab_manager.new_tab("https://magma.browser/local_cache".to_string());
-                            if let Some(wv) = _webview.as_ref() {
-                                let _ = wv.load_url(&tab_manager.get_active_tab().unwrap().url);
+                            let new_tab = tab_manager.get_active_tab().unwrap();
+                            let new_wv = engine::builder::build_webview(
+                                &window,
+                                &ephemeral_context,
+                                &adblock_engine,
+                                &new_tab.url,
+                                new_tab.id,
+                                browser_config.hardware_acceleration,
+                                ipc_tx.clone(),
+                            ).unwrap();
+                            for wv in webviews.values() {
+                                wv.set_visible(false);
                             }
+                            webviews.insert(new_tab.id, new_wv);
                             omnibox.defocus();
                             window.request_redraw();
                         }
                         PhysicalKey::Code(winit::keyboard::KeyCode::KeyW) => {
                             let idx = tab_manager.active_index;
-                            tab_manager.close_tab(idx);
-                            if let Some(wv) = _webview.as_ref() {
-                                let _ = wv.load_url(&tab_manager.get_active_tab().unwrap().url);
+                            if let Some(removed_id) = tab_manager.close_tab(idx) {
+                                webviews.remove(&removed_id);
+                            }
+                            let active = tab_manager.get_active_tab().unwrap();
+                            if let Some(wv) = webviews.get(&active.id) {
+                                wv.set_visible(true);
+                                wv.focus();
+                            } else {
+                                let new_wv = engine::builder::build_webview(
+                                    &window,
+                                    &ephemeral_context,
+                                    &adblock_engine,
+                                    &active.url,
+                                    active.id,
+                                    browser_config.hardware_acceleration,
+                                    ipc_tx.clone(),
+                                ).unwrap();
+                                webviews.insert(active.id, new_wv);
                             }
                             omnibox.defocus();
                             window.request_redraw();
@@ -203,9 +266,15 @@ fn main() {
                             } else if next >= tab_manager.tabs.len() {
                                 next = 0;
                             }
+                            let old_active = tab_manager.get_active_tab().unwrap().id;
                             if tab_manager.switch_tab(next) {
-                                if let Some(wv) = _webview.as_ref() {
-                                    let _ = wv.load_url(&tab_manager.get_active_tab().unwrap().url);
+                                let new_active = tab_manager.get_active_tab().unwrap().id;
+                                if let Some(wv) = webviews.get(&old_active) {
+                                    wv.set_visible(false);
+                                }
+                                if let Some(wv) = webviews.get(&new_active) {
+                                    wv.set_visible(true);
+                                    wv.focus();
                                 }
                                 omnibox.defocus();
                                 window.request_redraw();
@@ -223,8 +292,9 @@ fn main() {
                             let final_url = ui::omnibox::resolve_navigation_target(&omnibox.input, &browser_config.search_engine);
                             if !final_url.is_empty() {
                                 omnibox.push_history(final_url.clone());
+                                let active_id = tab_manager.get_active_tab().unwrap().id;
                                 tab_manager.update_active_url(final_url.clone());
-                                if let Some(wv) = _webview.as_ref() {
+                                if let Some(wv) = webviews.get(&active_id) {
                                     let _ = wv.load_url(&final_url);
                                 }
                             }
@@ -290,7 +360,7 @@ fn main() {
                     );
                     window.request_redraw();
                     
-                    if let Some(wv) = _webview.as_ref() {
+                    for wv in webviews.values() {
                         let bounds = wry::Rect {
                             x: 0,
                             y: ui::CHROME_HEIGHT as i32,
@@ -343,19 +413,18 @@ fn main() {
             Event::AboutToWait => {
                 // Checar IPC Wry
                 while let Ok(msg) = ipc_rx.try_recv() {
-                    if let Some(title) = msg.strip_prefix("title:") {
-                        let new_title = title.to_string();
-                        let active = tab_manager.get_active_tab().unwrap();
-                        if active.title != new_title {
-                            tab_manager.update_active_title(new_title);
-                            window.request_redraw();
-                        }
-                    } else if let Some(url) = msg.strip_prefix("url:") {
-                        let new_url = url.to_string();
-                        let active = tab_manager.get_active_tab().unwrap();
-                        if active.url != new_url {
-                            tab_manager.update_active_url(new_url);
-                            window.request_redraw();
+                    let parts: Vec<&str> = msg.splitn(3, '|').collect();
+                    if parts.len() == 3 {
+                        if let Ok(tab_id) = parts[0].parse::<u32>() {
+                            let cmd = parts[1];
+                            let payload = parts[2].to_string();
+                            if cmd == "title" {
+                                tab_manager.update_tab_title(tab_id, payload);
+                                window.request_redraw();
+                            } else if cmd == "url" {
+                                tab_manager.update_tab_url(tab_id, payload);
+                                window.request_redraw();
+                            }
                         }
                     } else if let Some(payload) = msg.strip_prefix("save_config:") {
                         let mut hw = browser_config.hardware_acceleration;
@@ -378,8 +447,9 @@ fn main() {
                 }
                 
                 // Ostrimmer
-                if let Ok(memory::os_trim::TrimAction::EmergencyCrash) = os_trimmer.try_trim(_webview.as_ref()) {
-                    if let Some(wv) = _webview.as_ref() {
+                if let Ok(memory::os_trim::TrimAction::EmergencyCrash) = os_trimmer.try_trim(None) {
+                    let active_id = tab_manager.get_active_tab().unwrap().id;
+                    if let Some(wv) = webviews.get(&active_id) {
                         let _ = wv.load_url("https://magma.browser/local_cache");
                     }
                 }

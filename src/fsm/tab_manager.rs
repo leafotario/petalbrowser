@@ -54,9 +54,9 @@ impl TabManager {
         self.active_index = self.tabs.len() - 1;
     }
 
-    pub fn close_tab(&mut self, index: usize) {
+    pub fn close_tab(&mut self, index: usize) -> Option<u32> {
         if index < self.tabs.len() {
-            self.tabs.remove(index);
+            let removed_id = self.tabs.remove(index).id;
             if self.tabs.is_empty() {
                 self.new_tab("https://magma.browser/local_cache".to_string());
             } else if self.active_index >= self.tabs.len() {
@@ -64,6 +64,9 @@ impl TabManager {
             } else if index < self.active_index {
                 self.active_index -= 1;
             }
+            Some(removed_id)
+        } else {
+            None
         }
     }
 
@@ -104,9 +107,19 @@ impl TabManager {
         #[cfg(not(target_os = "windows"))] return Ok(());
     }
 
-    pub fn update_active_title(&mut self, title: String) {
-        if let Some(active) = self.get_active_tab_mut() {
-            active.title = title;
+    pub fn get_tab_mut(&mut self, id: u32) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|t| t.id == id)
+    }
+
+    pub fn update_tab_title(&mut self, id: u32, title: String) {
+        if let Some(tab) = self.get_tab_mut(id) {
+            tab.title = title;
+        }
+    }
+
+    pub fn update_tab_url(&mut self, id: u32, url: String) {
+        if let Some(tab) = self.get_tab_mut(id) {
+            tab.url = url;
         }
     }
 
