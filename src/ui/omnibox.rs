@@ -19,6 +19,14 @@ pub struct OmniboxState {
 }
 
 impl OmniboxState {
+    pub fn safe_cursor(&self) -> usize {
+        let mut idx = self.cursor_position.min(self.input.len());
+        while idx > 0 && !self.input.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        idx
+    }
+
     pub fn new() -> Self {
         Self {
             is_focused: false,
@@ -78,11 +86,12 @@ impl OmniboxState {
             self.select_all_on_type = false;
             return;
         }
-        if self.cursor_position > 0 {
-            let prev_char_idx = self.input[..self.cursor_position]
+        let safe_cur = self.safe_cursor();
+        if safe_cur > 0 {
+            let prev_char_idx = self.input[..safe_cur]
                 .chars()
                 .last()
-                .map(|c| self.cursor_position - c.len_utf8());
+                .map(|c| safe_cur - c.len_utf8());
             if let Some(idx) = prev_char_idx {
                 self.input.remove(idx);
                 self.cursor_position = idx;
@@ -97,8 +106,9 @@ impl OmniboxState {
             self.select_all_on_type = false;
             return;
         }
-        if self.cursor_position < self.input.len() {
-            self.input.remove(self.cursor_position);
+        let safe_cur = self.safe_cursor();
+        if safe_cur < self.input.len() {
+            self.input.remove(safe_cur);
         }
     }
 
@@ -114,11 +124,12 @@ impl OmniboxState {
 
     pub fn arrow_left(&mut self) {
         self.select_all_on_type = false;
-        if self.cursor_position > 0 {
-            let prev_char_idx = self.input[..self.cursor_position]
+        let safe_cur = self.safe_cursor();
+        if safe_cur > 0 {
+            let prev_char_idx = self.input[..safe_cur]
                 .chars()
                 .last()
-                .map(|c| self.cursor_position - c.len_utf8());
+                .map(|c| safe_cur - c.len_utf8());
             if let Some(idx) = prev_char_idx {
                 self.cursor_position = idx;
             }
@@ -127,9 +138,10 @@ impl OmniboxState {
 
     pub fn arrow_right(&mut self) {
         self.select_all_on_type = false;
-        if self.cursor_position < self.input.len() {
-            if let Some(c) = self.input[self.cursor_position..].chars().next() {
-                self.cursor_position += c.len_utf8();
+        let safe_cur = self.safe_cursor();
+        if safe_cur < self.input.len() {
+            if let Some(c) = self.input[safe_cur..].chars().next() {
+                self.cursor_position = safe_cur + c.len_utf8();
             }
         }
     }
@@ -184,7 +196,8 @@ impl OmniboxState {
             self.scroll_offset = 0;
             return;
         }
-        let cursor_char_idx = self.input[..self.cursor_position].chars().count();
+        let safe_cur = self.safe_cursor();
+        let cursor_char_idx = self.input[..safe_cur].chars().count();
         if cursor_char_idx < self.scroll_offset {
             self.scroll_offset = cursor_char_idx;
         } else if cursor_char_idx >= self.scroll_offset + visible_chars {
@@ -344,7 +357,8 @@ pub fn render_omnibox(buffer: &mut [u32], width: usize, state: &mut OmniboxState
         );
 
         if state.is_focused && !state.select_all_on_type {
-            let chars_before_cursor = state.input[..state.cursor_position].chars().count();
+            let safe_cur = state.safe_cursor();
+            let chars_before_cursor = state.input[..safe_cur].chars().count();
             if chars_before_cursor >= state.scroll_offset {
                 let cursor_x = omnibox_x + 10 + ((chars_before_cursor - state.scroll_offset) * 8);
                 if cursor_x < omnibox_x + omnibox_w.saturating_sub(10) {

@@ -115,11 +115,9 @@ pub fn draw_char_clipped(
     if buf_width == 0 { return; }
     let buf_height = buffer.len() / buf_width;
 
-    let mut code = c as usize;
-    if code >= 256 {
-        code = '?' as usize;
-    }
-    let glyph = &font::FONT_8X16[code];
+    let code = c as usize;
+    // Fallback to '?' (ASCII 63) if out of bounds
+    let glyph = font::FONT_8X16.get(code).unwrap_or(&font::FONT_8X16[63]);
 
     for (row_idx, row_val) in glyph.iter().enumerate() {
         let py = y.saturating_add(row_idx);

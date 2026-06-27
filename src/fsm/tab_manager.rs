@@ -69,15 +69,21 @@ impl TabManager {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
 
-    pub fn update_tab_title(&mut self, id: u32, title: String) {
+    pub fn update_tab_title(&mut self, id: u32, title: String) -> bool {
         if let Some(tab) = self.get_tab_mut(id) {
             tab.title = title;
+            true
+        } else {
+            false
         }
     }
 
-    pub fn update_tab_url(&mut self, id: u32, url: String) {
+    pub fn update_tab_url(&mut self, id: u32, url: String) -> bool {
         if let Some(tab) = self.get_tab_mut(id) {
             tab.url = url;
+            true
+        } else {
+            false
         }
     }
 

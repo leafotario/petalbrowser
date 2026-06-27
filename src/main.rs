@@ -25,8 +25,14 @@ fn load_icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(rgba, width, height).ok()
 }
 
-fn main() -> Result<(), String> {
-    let event_loop = EventLoop::new().map_err(|e| format!("Falha fatal ao instanciar EventLoop: {}", e))?;
+fn main() {
+    let event_loop = match EventLoop::new() {
+        Ok(el) => el,
+        Err(e) => {
+            eprintln!("FALHA FATAL: Não foi possível instanciar o EventLoop do sistema: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let mut window_builder = WindowBuilder::new()
         .with_title("Petal Browser [Bare-Metal Edition]")
@@ -36,12 +42,29 @@ fn main() -> Result<(), String> {
         window_builder = window_builder.with_window_icon(Some(icon));
     }
 
-    let window = window_builder
-        .build(&event_loop)
-        .map_err(|e| format!("Falha arquitetural crítica ao criar a janela principal: {}", e))?;
+    let window = match window_builder.build(&event_loop) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("FALHA FATAL: Falha arquitetural crítica ao criar a janela principal: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-    let sb_context = unsafe { Context::new(&window).map_err(|e| format!("Falha fatal ao criar contexto gráfico (Softbuffer). Sem suporte GPU/Display? Erro: {:?}", e))? };
-    let mut sb_surface = unsafe { Surface::new(&sb_context, &window).map_err(|e| format!("Falha fatal ao criar superfície gráfica (Softbuffer). Erro: {:?}", e))? };
+    let sb_context = match unsafe { Context::new(&window) } {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FALHA FATAL: Não foi possível criar contexto gráfico (Softbuffer). Sem suporte GPU/Display? Erro: {:?}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut sb_surface = match unsafe { Surface::new(&sb_context, &window) } {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("FALHA FATAL: Não foi possível criar superfície gráfica (Softbuffer). Erro: {:?}", e);
+            std::process::exit(1);
+        }
+    };
 
     let adblock_engine = network::adblock::AdblockEngine::start();
 
@@ -55,16 +78,22 @@ fn main() -> Result<(), String> {
     let (ipc_tx, ipc_rx) = unbounded::<String>();
 
     let mut webviews = std::collections::HashMap::<u32, wry::WebView>::new();
-    let initial_tab = tab_manager.get_active_tab().cloned().ok_or("Estado inválido: Nenhuma aba ativa na inicialização.")?;
-    let initial_wv = engine::builder::build_webview(
-        &window,
-        &adblock_engine,
-        &initial_tab.url,
-        initial_tab.id,
-        browser_config.hardware_acceleration,
-        ipc_tx.clone(),
-    ).map_err(|e| format!("Falha catastrófica ao instanciar o WebView inicial do SO (Verifique dependências WebKit/WebView2). Erro: {}", e))?;
-    webviews.insert(initial_tab.id, initial_wv);
+    
+    if let Some(initial_tab) = tab_manager.get_active_tab().cloned() {
+        match engine::builder::build_webview(
+            &window,
+            &adblock_engine,
+            &initial_tab.url,
+            initial_tab.id,
+            browser_config.hardware_acceleration,
+            ipc_tx.clone(),
+        ) {
+            Ok(initial_wv) => { webviews.insert(initial_tab.id, initial_wv); }
+            Err(e) => eprintln!("AVISO CRÍTICO: Falha ao instanciar o WebView inicial do SO: {}", e),
+        }
+    } else {
+        eprintln!("AVISO: Nenhuma aba ativa na inicialização. Iniciando em estado vazio.");
+    }
     let mut settings_window: Option<(winit::window::Window, wry::WebView)> = None;
     let mut modifiers = ModifiersState::empty();
     let mut cursor_x = 0.0;
@@ -457,8 +486,8 @@ fn main() -> Result<(), String> {
                 if size.width > 0 && size.height > 0 {
                     if window_id == window.id() {
                         let _ = sb_surface.resize(
-                            NonZeroU32::new(size.width).unwrap_or(NonZeroU32::new(1).unwrap()),
-                            NonZeroU32::new(size.height).unwrap_or(NonZeroU32::new(1).unwrap()),
+                            NonZeroU32::new(size.width).unwrap_or(NonZeroU32::MIN),
+                            NonZeroU32::new(size.height).unwrap_or(NonZeroU32::MIN),
                         );
                         window.request_redraw();
                         
@@ -487,16 +516,21 @@ fn main() -> Result<(), String> {
                 if window_id == window.id() {
                     let size = window.inner_size();
                     if size.width > 0 && size.height > 0 {
-                        if let Ok(mut buffer) = sb_surface.buffer_mut() {
-                            // Limpa a tela inteira (incluindo onde os snapshots vao depois da TabBar)
-                            buffer.fill(0xFF_12_12_12);
-                            
-                            // Renderiza barra de abas
-                            ui::render_tab_bar(&mut buffer, size.width as usize, &tab_manager.tabs, tab_manager.active_index);
-                            let url_to_display = tab_manager.get_active_tab().map(|t| t.url.as_str()).unwrap_or("");
-                            ui::omnibox::render_omnibox(&mut buffer, size.width as usize, &mut omnibox, url_to_display);
-                            
-                            let _ = buffer.present();
+                        match sb_surface.buffer_mut() {
+                            Ok(mut buffer) => {
+                                // Limpa a tela inteira (incluindo onde os snapshots vao depois da TabBar)
+                                buffer.fill(0xFF_12_12_12);
+                                
+                                // Renderiza barra de abas
+                                ui::render_tab_bar(&mut buffer, size.width as usize, &tab_manager.tabs, tab_manager.active_index);
+                                let url_to_display = tab_manager.get_active_tab().map(|t| t.url.as_str()).unwrap_or("");
+                                ui::omnibox::render_omnibox(&mut buffer, size.width as usize, &mut omnibox, url_to_display);
+                                
+                                let _ = buffer.present();
+                            }
+                            Err(e) => {
+                                eprintln!("AVISO: Falha ao obter buffer gráfico do Softbuffer para redraw: {:?}", e);
+                            }
                         }
                     }
                     
@@ -533,11 +567,17 @@ fn main() -> Result<(), String> {
                             let cmd = parts[1];
                             let payload = parts[2].to_string();
                             if cmd == "title" {
-                                tab_manager.update_tab_title(tab_id, payload);
-                                window.request_redraw();
+                                if tab_manager.update_tab_title(tab_id, payload) {
+                                    window.request_redraw();
+                                } else {
+                                    eprintln!("AVISO: Comando IPC (title) recebido para aba inativa/removida: {}", tab_id);
+                                }
                             } else if cmd == "url" {
-                                tab_manager.update_tab_url(tab_id, payload);
-                                window.request_redraw();
+                                if tab_manager.update_tab_url(tab_id, payload) {
+                                    window.request_redraw();
+                                } else {
+                                    eprintln!("AVISO: Comando IPC (url) recebido para aba inativa/removida: {}", tab_id);
+                                }
                             } else if cmd == "focus_omnibox" {
                                 window.focus_window();
                                 use winit::raw_window_handle::HasWindowHandle;
@@ -585,9 +625,6 @@ fn main() -> Result<(), String> {
     }) {
         eprintln!("O loop de eventos principal encerrou de forma anormal: {}", e);
     }
-    
-    Ok(())
 }
-
 
 
