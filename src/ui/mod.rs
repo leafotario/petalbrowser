@@ -46,8 +46,12 @@ pub fn hit_test_tab_bar(cursor_x: f64, num_tabs: usize, window_width: f64) -> Ta
         }
     }
 
-    let plus_x = num_tabs * TAB_WIDTH + 16;
-    if plus_x < window_width as usize {
+    let mut plus_x = num_tabs * TAB_WIDTH + 16;
+    let w_usize = window_width as usize;
+    if plus_x + 16 > w_usize {
+        plus_x = w_usize.saturating_sub(20);
+    }
+    if plus_x < w_usize {
         // Roughly 16px wide hitbox for the + button
         if x >= plus_x.saturating_sub(4) && x <= plus_x + 16 {
             return TabHit::NewTabButton;
@@ -102,45 +106,75 @@ pub fn draw_beveled_rect(buffer: &mut [u32], buf_width: usize, x: usize, y: usiz
     }
 }
 
-/// Desenha um caractere 8x16 usando a fonte bitmap
-pub fn draw_char(buffer: &mut [u32], buf_width: usize, x: usize, y: usize, c: char, color: u32) {
+/// Desenha um caractere 8x16 usando a fonte bitmap com clipping explícito opcional.
+pub fn draw_char_clipped(
+    buffer: &mut [u32], buf_width: usize,
+    x: usize, y: usize, c: char, color: u32,
+    clip_x: usize, clip_y: usize, clip_w: usize, clip_h: usize
+) {
+    if buf_width == 0 { return; }
+    let buf_height = buffer.len() / buf_width;
+
     let mut code = c as usize;
-    if code >= 128 {
+    if code >= 256 {
         code = '?' as usize;
     }
     let glyph = &font::FONT_8X16[code];
+
     for (row_idx, row_val) in glyph.iter().enumerate() {
-        let py = y + row_idx;
-        let offset = py * buf_width + x;
+        let py = y.saturating_add(row_idx);
+
+        // Vertical clipping
+        if py < clip_y || py >= clip_y.saturating_add(clip_h) || py >= buf_height {
+            continue;
+        }
+
+        let offset = py.saturating_mul(buf_width);
+
         for col_idx in 0..8 {
             if (row_val & (1 << (7 - col_idx))) != 0 {
-                let cx = x + col_idx;
-                if cx < buf_width { // guarda de row-wrap já existente, preservada
-                    let px = offset + col_idx;
-                    if px < buffer.len() {
-                        buffer[px] = color;
-                    }
+                let px = x.saturating_add(col_idx);
+
+                // Horizontal clipping
+                if px < clip_x || px >= clip_x.saturating_add(clip_w) || px >= buf_width {
+                    continue;
+                }
+
+                let final_idx = offset.saturating_add(px);
+                if final_idx < buffer.len() {
+                    buffer[final_idx] = color;
                 }
             }
         }
     }
 }
 
-/// Desenha uma string com a fonte 8x16, limitando a largura máxima
+/// Desenha um caractere 8x16 usando a fonte bitmap (com clipping baseado apenas nos limites do buffer)
+pub fn draw_char(buffer: &mut [u32], buf_width: usize, x: usize, y: usize, c: char, color: u32) {
+    let buf_height = if buf_width > 0 { buffer.len() / buf_width } else { 0 };
+    draw_char_clipped(buffer, buf_width, x, y, c, color, 0, 0, buf_width, buf_height);
+}
+
+/// Desenha uma string com a fonte 8x16, cortando píxels parcialmente (clipping suave)
 pub fn draw_string(buffer: &mut [u32], buf_width: usize, x: usize, y: usize, text: &str, color: u32, max_width: usize) {
+    let buf_height = if buf_width > 0 { buffer.len() / buf_width } else { 0 };
+    let clip_w = max_width.min(buf_width.saturating_sub(x));
+    
     let mut current_x = x;
     let char_width = 8;
     for c in text.chars() {
-        if current_x + char_width > x + max_width {
-            break;
+        if current_x >= x.saturating_add(max_width) {
+            break; // Já extrapolamos a caixa totalmente
         }
-        draw_char(buffer, buf_width, current_x, y, c, color);
-        current_x += char_width;
+        draw_char_clipped(buffer, buf_width, current_x, y, c, color, x, y, clip_w, buf_height.saturating_sub(y));
+        current_x = current_x.saturating_add(char_width);
     }
 }
 
 /// Renderiza a barra de abas completa no buffer
 pub fn render_tab_bar(buffer: &mut [u32], width: usize, tabs: &[Tab], active_index: usize) {
+    if width < 2 { return; }
+
     let bg_color     = 0xFF_11_11_11; // Darkest background (Title bar)
     let fg_color     = 0xFF_D4_D4_D4;
     let active_bg    = 0xFF_28_28_28; // Matches Omnibox background
@@ -193,7 +227,10 @@ pub fn render_tab_bar(buffer: &mut [u32], width: usize, tabs: &[Tab], active_ind
     }
 
     // Botão nova aba '+'
-    let plus_x = tabs.len() * TAB_WIDTH + 16;
+    let mut plus_x = tabs.len() * TAB_WIDTH + 16;
+    if plus_x + 16 > width {
+        plus_x = width.saturating_sub(20);
+    }
     if plus_x < width {
         let plus_y = 12;
         draw_char(buffer, width, plus_x, plus_y, '+', fg_color);

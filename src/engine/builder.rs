@@ -1,85 +1,11 @@
-use std::env;
-use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 use winit::window::Window;
 use wry::{Rect, WebView, WebViewBuilder};
 #[cfg(target_os = "windows")]
 use wry::WebViewBuilderExtWindows;
 use crate::network::adblock::AdblockEngine;
 
-pub struct EphemeralWebContext {
-    pub data_dir: PathBuf,
-}
-
-#[cfg(target_os = "windows")]
-fn is_process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, GetExitCodeProcess};
-    use windows_sys::Win32::Foundation::CloseHandle;
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 { return false; }
-        let mut exit_code: u32 = 0;
-        let success = GetExitCodeProcess(handle, &mut exit_code);
-        CloseHandle(handle);
-        if success == 0 { return false; }
-        exit_code == 259 // STILL_ACTIVE
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
-}
-
-impl EphemeralWebContext {
-    pub fn new() -> Self {
-        Self::cleanup_abandoned();
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let current_pid = std::process::id();
-        let mut data_dir = env::temp_dir();
-        data_dir.push(format!("petal_volatile_{}_{}", current_pid, timestamp));
-        fs::create_dir_all(&data_dir).expect("Falha");
-        Self { data_dir }
-    }
-
-    fn cleanup_abandoned() {
-        let temp = env::temp_dir();
-        let current_pid = std::process::id();
-        if let Ok(entries) = fs::read_dir(&temp) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if name.starts_with("petal_volatile_") {
-                            let parts: Vec<&str> = name.split('_').collect();
-                            if parts.len() == 4 {
-                                if let Ok(pid) = parts[2].parse::<u32>() {
-                                    if pid != current_pid && !is_process_alive(pid) {
-                                        let _ = fs::remove_dir_all(&path);
-                                    }
-                                }
-                            } else if parts.len() == 3 {
-                                // Formato antigo sem PID
-                                let _ = fs::remove_dir_all(&path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Drop for EphemeralWebContext {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.data_dir);
-    }
-}
-
 pub fn build_webview(
     window: &Window,
-    _ephemeral_context: &EphemeralWebContext,
     adblock_engine: &AdblockEngine,
     url: &str,
     tab_id: u32,
@@ -125,6 +51,9 @@ pub fn build_webview(
     let blocked_array_js = adblock_engine.get_blocked_domains_js_array();
     let init_script = format!(r#"
         (function() {{
+            if (window.__petal_init) return;
+            window.__petal_init = true;
+
             const blocked = {};
             function isBlocked(urlStr) {{
                 if (!urlStr) return false;
@@ -138,20 +67,24 @@ pub fn build_webview(
                 return false;
             }}
 
-            const origFetch = window.fetch;
-            window.fetch = async function(...args) {{
-                let url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url);
-                if (isBlocked(url)) return Promise.reject(new Error('Petal Adblock: Fetch blocked'));
-                return origFetch.apply(this, args);
-            }};
+            if (window.fetch) {{
+                const origFetch = window.fetch;
+                window.fetch = async function(...args) {{
+                    let url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url);
+                    if (isBlocked(url)) return Promise.reject(new Error('Petal Adblock: Fetch blocked'));
+                    return origFetch.apply(this, args);
+                }};
+            }}
 
-            const origOpen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function(...args) {{
-                if (isBlocked(args[1])) return;
-                return origOpen.apply(this, args);
-            }};
+            if (window.XMLHttpRequest && XMLHttpRequest.prototype.open) {{
+                const origOpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(...args) {{
+                    if (isBlocked(args[1])) return;
+                    return origOpen.apply(this, args);
+                }};
+            }}
 
-            if (navigator.sendBeacon) {{
+            if (window.navigator && navigator.sendBeacon) {{
                 const origBeacon = navigator.sendBeacon;
                 navigator.sendBeacon = function(url, data) {{
                     if (isBlocked(url)) return false;
@@ -159,40 +92,91 @@ pub fn build_webview(
                 }};
             }}
 
-            // Nota técnica: O MutationObserver é "Best Effort".
-            // No nível Bare-Metal do WebView nativo, não conseguimos interceptar a rede (network layer)
-            // de requisições de media (img, script src) via HTTPS no cross-platform sem extensões.
-            // Portanto, o download de alguns desses recursos pode iniciar antes da remoção da DOM.
-            new MutationObserver((mutations) => {{
-                for (let m of mutations) {{
-                    for (let n of m.addedNodes) {{
-                        if (n.nodeType === 1) {{
-                            if ((n.tagName === 'SCRIPT' || n.tagName === 'IFRAME' || n.tagName === 'IMG') && isBlocked(n.src)) {{
-                                n.src = '';
-                                n.remove();
+            try {{
+                new MutationObserver((mutations) => {{
+                    for (let m of mutations) {{
+                        for (let n of m.addedNodes) {{
+                            if (n.nodeType === 1) {{
+                                if ((n.tagName === 'SCRIPT' || n.tagName === 'IFRAME' || n.tagName === 'IMG') && isBlocked(n.src)) {{
+                                    n.src = '';
+                                    n.remove();
+                                }}
                             }}
                         }}
                     }}
-                }}
-            }}).observe(document.documentElement || document, {{ childList: true, subtree: true }});
+                }}).observe(document, {{ childList: true, subtree: true }});
+            }} catch(e) {{}}
 
             window.addEventListener('keydown', function(e) {{
-                if (e.ctrlKey && e.key.toLowerCase() === 'l') {{
+                if (e.ctrlKey && e.key && e.key.toLowerCase() === 'l') {{
                     e.preventDefault();
-                    window.ipc.postMessage('{}|focus_omnibox|');
+                    if (window.ipc) window.ipc.postMessage('{}|focus_omnibox|');
                 }}
             }});
 
-            window.ipc.postMessage('{}|title|' + document.title);
-            new MutationObserver(function(mutations) {{
-                window.ipc.postMessage('{}|title|' + document.title);
-            }}).observe(
-                document.querySelector('title') || document.head,
-                {{ subtree: true, characterData: true, childList: true }}
-            );
+            let lastTitle = null;
+            function notifyTitle(t) {{
+                if (t !== lastTitle) {{
+                    lastTitle = t;
+                    if (window.ipc) window.ipc.postMessage('{}|title|' + t);
+                }}
+            }}
+
+            // Interceptação direta para SPAs que reescrevem document.title via JS
+            try {{
+                const NativeTitle = Object.getOwnPropertyDescriptor(Document.prototype, 'title');
+                if (NativeTitle && NativeTitle.set) {{
+                    Object.defineProperty(document, 'title', {{
+                        get: function() {{ return NativeTitle.get.call(this); }},
+                        set: function(val) {{
+                            NativeTitle.set.call(this, val);
+                            notifyTitle(val);
+                        }}
+                    }});
+                }}
+            }} catch(e) {{}}
+
+            try {{
+                let titleObs = new MutationObserver(() => notifyTitle(document.title || ''));
+                let titleObserved = false;
+                
+                function tryObserveTitle() {{
+                    if (titleObserved) return;
+                    let target = document.querySelector('title');
+                    if (target) {{
+                        titleObs.disconnect();
+                        titleObs.observe(target, {{ childList: true, characterData: true, subtree: true }});
+                        titleObserved = true;
+                    }}
+                }}
+
+                let headObs = new MutationObserver((mutations) => {{
+                    for (let m of mutations) {{
+                        for (let n of m.addedNodes) {{
+                            if (n.nodeName === 'TITLE') {{
+                                tryObserveTitle();
+                                notifyTitle(document.title || '');
+                                headObs.disconnect();
+                                return;
+                            }}
+                        }}
+                    }}
+                }});
+
+                if (document.head) {{
+                    headObs.observe(document.head, {{ childList: true }});
+                    tryObserveTitle();
+                }} else {{
+                    document.addEventListener('DOMContentLoaded', () => {{
+                        if (document.head) headObs.observe(document.head, {{ childList: true }});
+                        tryObserveTitle();
+                        notifyTitle(document.title || '');
+                    }});
+                }}
+                notifyTitle(document.title || '');
+            }} catch(e) {{}}
         }})();
-    "#, blocked_array_js, tab_id, tab_id, tab_id);
-    builder = builder.with_user_data_directory(_ephemeral_context.data_dir.clone());
+    "#, blocked_array_js, tab_id, tab_id);
     builder = builder.with_initialization_script(&init_script);
 
     #[cfg(target_os = "windows")]

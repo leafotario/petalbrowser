@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub struct Tab {
     pub id: u32,
     pub url: String,

@@ -1,5 +1,13 @@
 use crate::config::BrowserConfig;
 
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+     .replace('"', "&quot;")
+     .replace('\'', "&#39;")
+}
+
 pub fn get_settings_html(config: &BrowserConfig) -> String {
     format!(
         r#"<!DOCTYPE html>
@@ -64,14 +72,14 @@ pub fn get_settings_html(config: &BrowserConfig) -> String {
     <script>
         function save() {{
             var hw = document.getElementById('hw_accel').checked;
-            var engine = document.getElementById('search_engine').value.replace(/\|/g, '%7C');
-            var payload = 'save_config:hw=' + hw + '|search=' + engine;
+            var engine = document.getElementById('search_engine').value;
+            var payload = 'save_config:' + JSON.stringify({{ hardware_acceleration: hw, search_engine: engine }});
             window.ipc.postMessage(payload);
         }}
     </script>
 </body>
 </html>"#,
         hw_checked = if config.hardware_acceleration { "checked" } else { "" },
-        engine = config.search_engine.replace("\"", "&quot;")
+        engine = escape_html(&config.search_engine)
     )
 }

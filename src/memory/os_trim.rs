@@ -10,10 +10,19 @@ pub enum TrimAction { None, EmergencyCrash }
 pub struct OsTrimmer { 
     last_measurement: Option<Instant>,
     last_trim: Option<Instant>,
+    logged_measurement_error: bool,
+    logged_trim_error: bool,
 }
 
 impl OsTrimmer {
-    pub fn new() -> Self { Self { last_measurement: None, last_trim: None } }
+    pub fn new() -> Self { 
+        Self { 
+            last_measurement: None, 
+            last_trim: None,
+            logged_measurement_error: false,
+            logged_trim_error: false,
+        } 
+    }
     pub fn try_trim(&mut self, webview: Option<&wry::WebView>) -> Result<TrimAction, String> {
         let now = Instant::now();
         
@@ -27,9 +36,18 @@ impl OsTrimmer {
         if should_measure {
             self.last_measurement = Some(now);
             if let Some(wv) = webview {
-                let rss_bytes = get_webview_rss(wv).unwrap_or(0);
-                if rss_bytes > (EMERGENCY_RSS_CEILING_MB * 1024 * 1024) { 
-                    action = TrimAction::EmergencyCrash; 
+                match get_webview_rss(wv) {
+                    Ok(rss_bytes) => {
+                        if rss_bytes > (EMERGENCY_RSS_CEILING_MB * 1024 * 1024) { 
+                            action = TrimAction::EmergencyCrash; 
+                        }
+                    },
+                    Err(e) => {
+                        if !self.logged_measurement_error {
+                            eprintln!("[Guardião de Memória] Aviso: Não é possível medir RSS da WebView. (Motivo: {}) Proteção de teto de memória desativada.", e);
+                            self.logged_measurement_error = true;
+                        }
+                    }
                 }
             }
         }
@@ -41,7 +59,12 @@ impl OsTrimmer {
 
         if should_trim {
             self.last_trim = Some(now);
-            let _ = execute_host_trim();
+            if let Err(e) = execute_host_trim() {
+                if !self.logged_trim_error {
+                    eprintln!("[Guardião de Memória] Aviso: Trim do Host ignorado. (Motivo: {})", e);
+                    self.logged_trim_error = true;
+                }
+            }
             #[cfg(target_os = "windows")]
             if let Some(wv) = webview { let _ = execute_webview_trim_windows(wv); }
         }
@@ -77,11 +100,10 @@ fn get_webview_rss(webview: &wry::WebView) -> Result<usize, String> {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn get_webview_rss(_webview: &wry::WebView) -> Result<usize, String> { Ok(0) }
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-fn get_webview_rss(_webview: &wry::WebView) -> Result<usize, String> { Ok(0) }
+#[cfg(not(target_os = "windows"))]
+fn get_webview_rss(_webview: &wry::WebView) -> Result<usize, String> {
+    Err("API de leitura de memória do processo filho não está implementada nesta plataforma".into())
+}
 
 #[cfg(target_os = "windows")]
 fn execute_host_trim() -> Result<(), String> {
@@ -120,4 +142,6 @@ fn execute_webview_trim_windows(webview: &wry::WebView) -> Result<(), String> {
 fn execute_host_trim() -> Result<(), String> { unsafe { libc::malloc_trim(0); } Ok(()) }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-fn execute_host_trim() -> Result<(), String> { Ok(()) }
+fn execute_host_trim() -> Result<(), String> {
+    Err("API nativa de triming de RAM do processo não suportada nesta plataforma".into())
+}

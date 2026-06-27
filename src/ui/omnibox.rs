@@ -1,5 +1,13 @@
 use std::collections::VecDeque;
 
+pub enum OmniboxHit {
+    Back,
+    Forward,
+    Refresh,
+    Settings,
+    Omnibox,
+    None,
+}
 pub struct OmniboxState {
     pub is_focused: bool,
     pub input: String,
@@ -120,12 +128,9 @@ impl OmniboxState {
     pub fn arrow_right(&mut self) {
         self.select_all_on_type = false;
         if self.cursor_position < self.input.len() {
-            let next_char_len = self.input[self.cursor_position..]
-                .chars()
-                .next()
-                .unwrap()
-                .len_utf8();
-            self.cursor_position += next_char_len;
+            if let Some(c) = self.input[self.cursor_position..].chars().next() {
+                self.cursor_position += c.len_utf8();
+            }
         }
     }
 
@@ -226,7 +231,48 @@ pub fn resolve_navigation_target(input: &str, search_engine: &str) -> String {
     search_engine.replace("{}", &minimal_encode(trimmed))
 }
 
+pub fn hit_test_omnibox(cursor_x: f64, width: usize) -> OmniboxHit {
+    let mut current_x = 10;
+    let button_w = 36;
+    let x = cursor_x as usize;
+
+    // Back
+    if width > 80 {
+        if x >= current_x && x < current_x + button_w { return OmniboxHit::Back; }
+        current_x += button_w + 6;
+    }
+    // Forward
+    if width > 120 {
+        if x >= current_x && x < current_x + button_w { return OmniboxHit::Forward; }
+        current_x += button_w + 6;
+    }
+    // Refresh
+    if width > 180 {
+        if x >= current_x && x < current_x + button_w { return OmniboxHit::Refresh; }
+        current_x += button_w + 6;
+    }
+
+    // Settings
+    let mut settings_w = 0;
+    if width > 220 {
+        settings_w = button_w + 10;
+        let settings_x = width.saturating_sub(button_w + 10);
+        if x >= settings_x && x < settings_x + button_w { return OmniboxHit::Settings; }
+    }
+
+    let omnibox_x = current_x + 4;
+    let omnibox_w = width.saturating_sub(omnibox_x + settings_w).saturating_sub(4);
+    
+    if omnibox_w > 10 && x >= omnibox_x && x < omnibox_x + omnibox_w {
+        return OmniboxHit::Omnibox;
+    }
+
+    OmniboxHit::None
+}
+
 pub fn render_omnibox(buffer: &mut [u32], width: usize, state: &mut OmniboxState, current_url: &str) {
+    if width < 2 { return; }
+
     let bg_color = 0xFF_28_28_28; // Matches active tab background
     crate::ui::clear_rect(buffer, width, 0, crate::ui::TABBAR_HEIGHT as usize, width, crate::ui::OMNIBOX_HEIGHT as usize, bg_color);
 
@@ -236,60 +282,74 @@ pub fn render_omnibox(buffer: &mut [u32], width: usize, state: &mut OmniboxState
     let btn_bg     = 0xFF_3C_3C_3C;
     let icon_color = 0xFF_DD_DD_DD;
 
+    let mut current_x = 10;
+
     // Back `<`
-    crate::ui::draw_beveled_rect(buffer, width, 10, nav_y, button_w, button_h, btn_bg);
-    crate::ui::draw_char(buffer, width, 10 + 14, nav_y + 7, '<', icon_color);
-
-    // Forward `>`
-    crate::ui::draw_beveled_rect(buffer, width, 52, nav_y, button_w, button_h, btn_bg);
-    crate::ui::draw_char(buffer, width, 52 + 14, nav_y + 7, '>', icon_color);
-
-    // Refresh `C`
-    crate::ui::draw_beveled_rect(buffer, width, 94, nav_y, button_w, button_h, btn_bg);
-    crate::ui::draw_char(buffer, width, 94 + 14, nav_y + 7, 'C', icon_color);
-
-    // Settings `S`
-    let settings_x = width.saturating_sub(46);
-    crate::ui::draw_beveled_rect(buffer, width, settings_x, nav_y, button_w, button_h, btn_bg);
-    crate::ui::draw_char(buffer, width, settings_x + 14, nav_y + 7, 'S', icon_color);
-
-    // Omnibox field
-    let omnibox_x = 140;
-    let omnibox_w = width.saturating_sub(140 + 56); // Room for nav buttons + settings
-
-    let field_bg = if state.is_focused { 0xFF_00_00_00 } else { 0xFF_11_11_11 };
-    crate::ui::draw_beveled_rect(buffer, width, omnibox_x, nav_y, omnibox_w, button_h, field_bg);
-
-    let visible_chars = omnibox_w.saturating_sub(20) / 8;
-    state.update_scroll(visible_chars);
-
-    let display_text = if state.is_focused { &state.input } else { current_url };
-    let chars: Vec<char> = display_text.chars().collect();
-    let start_idx = if state.is_focused { state.scroll_offset.min(chars.len()) } else { 0 };
-    let visible_text: String = chars[start_idx..].iter().collect();
-
-    if state.is_focused && state.select_all_on_type && !display_text.is_empty() {
-        // FIX: saturating_sub evita underflow de usize quando omnibox_w < 20
-        let sel_w = (visible_text.chars().count() * 8).min(omnibox_w.saturating_sub(20));
-        crate::ui::clear_rect(buffer, width, omnibox_x + 10, nav_y + 7, sel_w, 16, 0xFF_00_55_AA);
+    if width > 80 {
+        crate::ui::draw_beveled_rect(buffer, width, current_x, nav_y, button_w, button_h, btn_bg);
+        crate::ui::draw_char(buffer, width, current_x + 14, nav_y + 7, '<', icon_color);
+        current_x += button_w + 6;
     }
 
-    crate::ui::draw_string(
-        buffer, width,
-        omnibox_x + 10, nav_y + 7,
-        &visible_text,
-        0xFF_E0_E0_E0,
-        omnibox_w.saturating_sub(20), // já usava saturating_sub, preservado
-    );
+    // Forward `>`
+    if width > 120 {
+        crate::ui::draw_beveled_rect(buffer, width, current_x, nav_y, button_w, button_h, btn_bg);
+        crate::ui::draw_char(buffer, width, current_x + 14, nav_y + 7, '>', icon_color);
+        current_x += button_w + 6;
+    }
 
-    if state.is_focused && !state.select_all_on_type {
-        let chars_before_cursor = state.input[..state.cursor_position].chars().count();
-        if chars_before_cursor >= state.scroll_offset {
-            let cursor_x = omnibox_x + 10 + ((chars_before_cursor - state.scroll_offset) * 8);
-            // Seguro: omnibox_x (140) + omnibox_w - 10 = 130 + omnibox_w >= 130 (sem underflow)
-            // pois omnibox_x = 140 >= 10 sempre.
-            if cursor_x < omnibox_x + omnibox_w - 10 {
-                crate::ui::clear_rect(buffer, width, cursor_x, nav_y + 7, 2, 16, 0xFF_FF_FF_FF);
+    // Refresh `C`
+    if width > 180 {
+        crate::ui::draw_beveled_rect(buffer, width, current_x, nav_y, button_w, button_h, btn_bg);
+        crate::ui::draw_char(buffer, width, current_x + 14, nav_y + 7, 'C', icon_color);
+        current_x += button_w + 6;
+    }
+
+    // Settings `S`
+    let mut settings_w = 0;
+    if width > 220 {
+        settings_w = button_w + 10;
+        let settings_x = width.saturating_sub(button_w + 10);
+        crate::ui::draw_beveled_rect(buffer, width, settings_x, nav_y, button_w, button_h, btn_bg);
+        crate::ui::draw_char(buffer, width, settings_x + 14, nav_y + 7, 'S', icon_color);
+    }
+
+    // Omnibox field
+    let omnibox_x = current_x + 4;
+    let omnibox_w = width.saturating_sub(omnibox_x + settings_w).saturating_sub(4);
+    
+    if omnibox_w > 10 {
+        let field_bg = if state.is_focused { 0xFF_00_00_00 } else { 0xFF_11_11_11 };
+        crate::ui::draw_beveled_rect(buffer, width, omnibox_x, nav_y, omnibox_w, button_h, field_bg);
+
+        let visible_chars = omnibox_w.saturating_sub(20) / 8;
+        state.update_scroll(visible_chars);
+
+        let display_text = if state.is_focused { &state.input } else { current_url };
+        let chars: Vec<char> = display_text.chars().collect();
+        let start_idx = if state.is_focused { state.scroll_offset.min(chars.len()) } else { 0 };
+        let visible_text: String = chars[start_idx..].iter().collect();
+
+        if state.is_focused && state.select_all_on_type && !display_text.is_empty() {
+            let sel_w = (visible_text.chars().count() * 8).min(omnibox_w.saturating_sub(20));
+            crate::ui::clear_rect(buffer, width, omnibox_x + 10, nav_y + 7, sel_w, 16, 0xFF_00_55_AA);
+        }
+
+        crate::ui::draw_string(
+            buffer, width,
+            omnibox_x + 10, nav_y + 7,
+            &visible_text,
+            0xFF_E0_E0_E0,
+            omnibox_w.saturating_sub(20),
+        );
+
+        if state.is_focused && !state.select_all_on_type {
+            let chars_before_cursor = state.input[..state.cursor_position].chars().count();
+            if chars_before_cursor >= state.scroll_offset {
+                let cursor_x = omnibox_x + 10 + ((chars_before_cursor - state.scroll_offset) * 8);
+                if cursor_x < omnibox_x + omnibox_w.saturating_sub(10) {
+                    crate::ui::clear_rect(buffer, width, cursor_x, nav_y + 7, 2, 16, 0xFF_FF_FF_FF);
+                }
             }
         }
     }
