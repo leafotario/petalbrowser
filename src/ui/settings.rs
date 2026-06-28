@@ -67,12 +67,22 @@ pub fn get_settings_html(config: &BrowserConfig) -> String {
         <i>ℹ️ As configurações são persistidas em seu Perfil Local (AppData, XDG, ou Home). O diretório de execução atual não afeta o salvamento.</i>
     </div>
 
+    <div id="error_msg" style="color: #ff5555; display: none; margin-top: 10px; margin-bottom: 15px; font-weight: bold;"></div>
+
     <button onclick="save()">Salvar e Fechar</button>
 
     <script>
         function save() {{
             var hw = document.getElementById('hw_accel').checked;
-            var engine = document.getElementById('search_engine').value;
+            var engine = document.getElementById('search_engine').value.trim();
+            
+            if (engine !== '' && engine.indexOf('{{}}') === -1) {{
+                var err = document.getElementById('error_msg');
+                err.innerText = 'Erro: O motor de busca deve conter "{{}}" para o termo pesquisado.';
+                err.style.display = 'block';
+                return;
+            }}
+            
             var payload = 'save_config:' + JSON.stringify({{ hardware_acceleration: hw, search_engine: engine }});
             window.ipc.postMessage(payload);
         }}

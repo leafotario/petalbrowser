@@ -18,7 +18,7 @@ impl TabManager {
             active_index: 0,
             next_id: 1,
         };
-        tm.new_tab("https://petal.browser/local_cache".to_string());
+        tm.new_tab("petal://newtab".to_string());
         tm
     }
 
@@ -37,7 +37,7 @@ impl TabManager {
         if index < self.tabs.len() {
             let removed_id = self.tabs.remove(index).id;
             if self.tabs.is_empty() {
-                self.new_tab("https://petal.browser/local_cache".to_string());
+                self.new_tab("petal://newtab".to_string());
             } else if self.active_index >= self.tabs.len() {
                 self.active_index = self.tabs.len() - 1;
             } else if index < self.active_index {

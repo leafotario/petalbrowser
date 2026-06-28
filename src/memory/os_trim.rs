@@ -5,7 +5,7 @@ const TRIM_COOLDOWN: Duration = Duration::from_secs(45);
 const EMERGENCY_RSS_CEILING_MB: usize = 500;
 
 #[derive(Debug, PartialEq)]
-pub enum TrimAction { None, EmergencyCrash }
+pub enum TrimAction { None, EmergencyFallback }
 
 pub struct OsTrimmer { 
     last_measurement: Option<Instant>,
@@ -39,7 +39,7 @@ impl OsTrimmer {
                 match get_webview_rss(wv) {
                     Ok(rss_bytes) => {
                         if rss_bytes > (EMERGENCY_RSS_CEILING_MB * 1024 * 1024) { 
-                            action = TrimAction::EmergencyCrash; 
+                            action = TrimAction::EmergencyFallback; 
                         }
                     },
                     Err(e) => {

@@ -42,3 +42,13 @@ objc2-app-kit = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+
+# Configuração de Release otimizada para o Petal Browser:
+# Foco em footprint de memória mínimo, tamanho de binário reduzido e máxima performance.
+[profile.release]
+opt-level = 3          # Otimização máxima de velocidade
+lto = true             # Link Time Optimization: otimiza o código entre todas as dependências
+codegen-units = 1      # Maximiza a eficácia do LTO (build mais lento, binário mais rápido/menor)
+panic = "abort"        # Remove código de unwinding de stack (reduz drasticamente o tamanho do binário)
+strip = true           # Remove símbolos de debug (menor tamanho final no disco)
+

@@ -21,7 +21,7 @@ impl Default for BrowserConfig {
 impl BrowserConfig {
     pub fn validate(&mut self) {
         let trimmed = self.search_engine.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || !trimmed.contains("{}") {
             self.search_engine = "https://duckduckgo.com/?q={}".to_string();
         } else {
             self.search_engine = trimmed.to_string();
@@ -33,7 +33,7 @@ impl BrowserConfig {
             if let Ok(appdata) = std::env::var("APPDATA") {
                 PathBuf::from(appdata)
             } else {
-                std::env::current_dir().unwrap_or_default()
+                return Err("Variável de ambiente APPDATA não encontrada no Windows.".to_string());
             }
         } else if cfg!(target_os = "macos") {
             if let Ok(home) = std::env::var("HOME") {
@@ -42,7 +42,7 @@ impl BrowserConfig {
                 p.push("Application Support");
                 p
             } else {
-                std::env::current_dir().unwrap_or_default()
+                return Err("Variável de ambiente HOME não encontrada no macOS.".to_string());
             }
         } else {
             if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
@@ -52,7 +52,7 @@ impl BrowserConfig {
                 p.push(".config");
                 p
             } else {
-                std::env::current_dir().unwrap_or_default()
+                return Err("Variáveis de ambiente XDG_CONFIG_HOME ou HOME não encontradas no Linux/Unix.".to_string());
             }
         };
         base.push("PetalBrowser");

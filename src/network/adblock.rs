@@ -1,8 +1,7 @@
-use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct AdblockEngine {
-    blocked_domains: HashSet<String>,
+    rules: Vec<(String, String)>,
 }
 
 impl AdblockEngine {
@@ -12,7 +11,7 @@ impl AdblockEngine {
         // Regras contendo caminhos (paths) como "facebook.com/tr/" são mortas e 
         // nunca funcionarão porque o avaliador extrai apenas o host. 
         // Para manter o footprint de RAM mínimo, mantemos a simplicidade de Host-Only.
-        let mut domains = HashSet::new();
+        let mut rules = Vec::new();
         let base_list = vec![
             "doubleclick.net",
             "google-analytics.com",
@@ -32,11 +31,12 @@ impl AdblockEngine {
         ];
         
         for d in base_list {
-            domains.insert(d.to_string());
+            // Pré-computa o sufixo (".dominio") para evitar alocações no caminho quente
+            rules.push((d.to_string(), format!(".{}", d)));
         }
 
         Self {
-            blocked_domains: domains,
+            rules,
         }
     }
 
@@ -65,8 +65,8 @@ impl AdblockEngine {
                 return false;
             }
 
-            for domain in &self.blocked_domains {
-                if host == domain || host.ends_with(&format!(".{}", domain)) {
+            for (domain, suffix) in &self.rules {
+                if host == domain || host.ends_with(suffix) {
                     // Log útil e sutil apenas quando bloqueia de fato
                     println!("🛡️ Adblock interceptou navegação para: {}", domain);
                     return true;
@@ -79,7 +79,7 @@ impl AdblockEngine {
     /// Retorna a lista de domínios bloqueados como uma string de Array JSON
     /// Útil para injetar o escudo dinâmico no JS, que também segue a regra Host-Only.
     pub fn get_blocked_domains_js_array(&self) -> String {
-        let items: Vec<String> = self.blocked_domains.iter().map(|d| format!("'{}'", d)).collect();
+        let items: Vec<String> = self.rules.iter().map(|(d, _)| format!("'{}'", d)).collect();
         format!("[{}]", items.join(","))
     }
 }

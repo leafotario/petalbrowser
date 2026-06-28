@@ -25,6 +25,113 @@ fn load_icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(rgba, width, height).ok()
 }
 
+#[cfg(target_os = "windows")]
+fn force_focus_window(window: &winit::window::Window) {
+    use winit::raw_window_handle::HasWindowHandle;
+    if let Ok(handle) = window.window_handle() {
+        if let winit::raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
+            unsafe {
+                windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(h.hwnd.get() as _);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn force_focus_window(_window: &winit::window::Window) {
+    // No-op for non-Windows platforms
+}
+
+fn ensure_active_webview(
+    tab_manager: &mut fsm::tab_manager::TabManager,
+    webviews: &mut std::collections::HashMap<u32, wry::WebView>,
+    window: &winit::window::Window,
+    adblock_engine: &network::adblock::AdblockEngine,
+    hardware_acceleration: bool,
+    ipc_tx: crossbeam_channel::Sender<String>,
+) {
+    loop {
+        if let Some(active) = tab_manager.get_active_tab().cloned() {
+            for (id, wv) in webviews.iter() {
+                if *id != active.id {
+                    wv.set_visible(false);
+                }
+            }
+
+            if let Some(wv) = webviews.get(&active.id) {
+                wv.set_visible(true);
+                wv.focus();
+                break;
+            } else {
+                match engine::builder::build_webview(
+                    window,
+                    adblock_engine,
+                    &active.url,
+                    active.id,
+                    hardware_acceleration,
+                    ipc_tx.clone(),
+                ) {
+                    Ok(new_wv) => {
+                        new_wv.set_visible(true);
+                        new_wv.focus();
+                        webviews.insert(active.id, new_wv);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("FALHA FATAL EM ABA: Não foi possível recriar WebView para a aba ativa (ID {}): {}", active.id, e);
+                        let idx = tab_manager.active_index;
+                        if let Some(removed_id) = tab_manager.close_tab(idx) {
+                            webviews.remove(&removed_id);
+                        }
+                        if tab_manager.tabs.is_empty() {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+fn open_settings_window(
+    settings_window: &mut Option<(winit::window::Window, wry::WebView)>,
+    elwt: &winit::event_loop::EventLoopWindowTarget<()>,
+    settings_tx: &crossbeam_channel::Sender<String>,
+    browser_config: &config::BrowserConfig,
+) {
+    if settings_window.is_none() {
+        let mut sw_builder = winit::window::WindowBuilder::new()
+            .with_title("Configurações do Petal")
+            .with_inner_size(winit::dpi::LogicalSize::new(450.0, 350.0));
+        if let Some(icon) = load_icon() {
+            sw_builder = sw_builder.with_window_icon(Some(icon));
+        }
+        match sw_builder.build(elwt) {
+            Ok(sw) => {
+                let tx = settings_tx.clone();
+                match wry::WebViewBuilder::new(&sw)
+                    .with_ipc_handler(move |request| {
+                        let _ = tx.send(request);
+                    })
+                    .with_html(ui::settings::get_settings_html(browser_config))
+                {
+                    Ok(builder) => {
+                        match builder.build() {
+                            Ok(swv) => *settings_window = Some((sw, swv)),
+                            Err(e) => eprintln!("Aviso: Falha ao construir WebView de configurações: {}", e),
+                        }
+                    }
+                    Err(e) => eprintln!("Aviso: Falha na montagem de HTML das configs: {:?}", e),
+                }
+            }
+            Err(e) => eprintln!("Aviso: OS recusou criar janela auxiliar de Configs: {}", e),
+        }
+    }
+}
+
 fn main() {
     let event_loop = match EventLoop::new() {
         Ok(el) => el,
@@ -76,22 +183,12 @@ fn main() {
     let mut omnibox = ui::omnibox::OmniboxState::new();
 
     let (ipc_tx, ipc_rx) = unbounded::<String>();
+    let (settings_tx, settings_rx) = unbounded::<String>();
 
     let mut webviews = std::collections::HashMap::<u32, wry::WebView>::new();
     
-    if let Some(initial_tab) = tab_manager.get_active_tab().cloned() {
-        match engine::builder::build_webview(
-            &window,
-            &adblock_engine,
-            &initial_tab.url,
-            initial_tab.id,
-            browser_config.hardware_acceleration,
-            ipc_tx.clone(),
-        ) {
-            Ok(initial_wv) => { webviews.insert(initial_tab.id, initial_wv); }
-            Err(e) => eprintln!("AVISO CRÍTICO: Falha ao instanciar o WebView inicial do SO: {}", e),
-        }
-    } else {
+    ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
+    if tab_manager.tabs.is_empty() {
         eprintln!("AVISO: Nenhuma aba ativa na inicialização. Iniciando em estado vazio.");
     }
     let mut settings_window: Option<(winit::window::Window, wry::WebView)> = None;
@@ -135,14 +232,7 @@ fn main() {
             Event::WindowEvent { event: WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }, .. } => {
                 if cursor_y < ui::CHROME_HEIGHT as f64 {
                     window.focus_window();
-                    use winit::raw_window_handle::HasWindowHandle;
-                    if let Ok(handle) = window.window_handle() {
-                        if let winit::raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
-                            unsafe {
-                                windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(h.hwnd.get() as _);
-                            }
-                        }
-                    }
+                    force_focus_window(&window);
                 }
 
                 // Rastreio de cliques na barra de abas
@@ -153,70 +243,21 @@ fn main() {
                             if let Some(removed_id) = tab_manager.close_tab(clicked_index) {
                                 webviews.remove(&removed_id);
                             }
-                            if let Some(active) = tab_manager.get_active_tab().cloned() {
-                                if let Some(wv) = webviews.get(&active.id) {
-                                    wv.set_visible(true);
-                                    wv.focus();
-                                } else {
-                                    match engine::builder::build_webview(
-                                        &window,
-                                        &adblock_engine,
-                                        &active.url,
-                                        active.id,
-                                        browser_config.hardware_acceleration,
-                                        ipc_tx.clone(),
-                                    ) {
-                                        Ok(new_wv) => { webviews.insert(active.id, new_wv); }
-                                        Err(e) => { eprintln!("Falha silenciosa ao reconstruir a aba ativa: {}", e); }
-                                    }
-                                }
-                            }
+                            ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
                             window.request_redraw();
                         }
                         ui::TabHit::Tab(clicked_index) => {
-                            if let Some(old_tab) = tab_manager.get_active_tab().cloned() {
-                                let old_active = old_tab.id;
-                                if tab_manager.switch_tab(clicked_index) {
-                                    if let Some(new_tab) = tab_manager.get_active_tab() {
-                                        let new_active = new_tab.id;
-                                        if let Some(wv) = webviews.get(&old_active) {
-                                            wv.set_visible(false);
-                                        }
-                                        if let Some(wv) = webviews.get(&new_active) {
-                                            wv.set_visible(true);
-                                            wv.focus();
-                                        }
-                                        omnibox.defocus();
-                                        window.request_redraw();
-                                    }
-                                }
+                            if tab_manager.switch_tab(clicked_index) {
+                                ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
+                                omnibox.defocus();
+                                window.request_redraw();
                             }
                         }
                         ui::TabHit::NewTabButton => {
-                            tab_manager.new_tab("https://petal.browser/local_cache".to_string());
-                            if let Some(new_tab) = tab_manager.get_active_tab().cloned() {
-                                match engine::builder::build_webview(
-                                    &window,
-                                    &adblock_engine,
-                                    &new_tab.url,
-                                    new_tab.id,
-                                    browser_config.hardware_acceleration,
-                                    ipc_tx.clone(),
-                                ) {
-                                    Ok(new_wv) => {
-                                        for wv in webviews.values() { wv.set_visible(false); }
-                                        webviews.insert(new_tab.id, new_wv);
-                                        omnibox.defocus();
-                                        window.request_redraw();
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Aviso: O OS não conseguiu instanciar a nova WebView para a nova aba (Falta de Memória?). Erro: {}", e);
-                                        if let Some(idx) = tab_manager.tabs.iter().position(|t| t.id == new_tab.id) {
-                                            tab_manager.close_tab(idx);
-                                        }
-                                    }
-                                }
-                            }
+                            tab_manager.new_tab("petal://newtab".to_string());
+                            ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
+                            omnibox.defocus();
+                            window.request_redraw();
                         }
                         ui::TabHit::None => {}
                     }
@@ -239,34 +280,7 @@ fn main() {
                             }
                         }
                         ui::omnibox::OmniboxHit::Settings => {
-                            if settings_window.is_none() {
-                                let mut sw_builder = WindowBuilder::new()
-                                    .with_title("Configurações do Petal")
-                                    .with_inner_size(winit::dpi::LogicalSize::new(450.0, 350.0));
-                                if let Some(icon) = load_icon() {
-                                    sw_builder = sw_builder.with_window_icon(Some(icon));
-                                }
-                                match sw_builder.build(elwt) {
-                                    Ok(sw) => {
-                                        let tx = ipc_tx.clone();
-                                        match wry::WebViewBuilder::new(&sw)
-                                            .with_ipc_handler(move |request| {
-                                                let _ = tx.send(request);
-                                            })
-                                            .with_html(ui::settings::get_settings_html(&browser_config))
-                                        {
-                                            Ok(builder) => {
-                                                match builder.build() {
-                                                    Ok(swv) => settings_window = Some((sw, swv)),
-                                                    Err(e) => eprintln!("Aviso: Falha ao construir WebView de configurações: {}", e),
-                                                }
-                                            }
-                                            Err(e) => eprintln!("Aviso: Falha na montagem de HTML das configs: {:?}", e),
-                                        }
-                                    }
-                                    Err(e) => eprintln!("Aviso: OS recusou criar janela auxiliar de Configs: {}", e),
-                                }
-                            }
+                            open_settings_window(&mut settings_window, elwt, &settings_tx, &browser_config);
                         }
                         ui::omnibox::OmniboxHit::Omnibox => {
                             if let Some(active) = tab_manager.get_active_tab() {
@@ -285,34 +299,7 @@ fn main() {
                 if ctrl {
                     match logical_key.as_ref() {
                         Key::Character(",") => {
-                            if settings_window.is_none() {
-                                let mut sw_builder = WindowBuilder::new()
-                                    .with_title("Configurações do Petal")
-                                    .with_inner_size(winit::dpi::LogicalSize::new(450.0, 350.0));
-                                if let Some(icon) = load_icon() {
-                                    sw_builder = sw_builder.with_window_icon(Some(icon));
-                                }
-                                match sw_builder.build(elwt) {
-                                    Ok(sw) => {
-                                        let tx = ipc_tx.clone();
-                                        match wry::WebViewBuilder::new(&sw)
-                                            .with_ipc_handler(move |request| {
-                                                let _ = tx.send(request);
-                                            })
-                                            .with_html(ui::settings::get_settings_html(&browser_config))
-                                        {
-                                            Ok(builder) => {
-                                                match builder.build() {
-                                                    Ok(swv) => settings_window = Some((sw, swv)),
-                                                    Err(e) => eprintln!("Aviso: Falha ao construir WebView de configurações via atalho: {}", e),
-                                                }
-                                            }
-                                            Err(e) => eprintln!("Aviso: Falha na montagem de HTML das configs: {:?}", e),
-                                        }
-                                    }
-                                    Err(e) => eprintln!("Aviso: OS recusou criar janela auxiliar de Configs via atalho: {}", e),
-                                }
-                            }
+                            open_settings_window(&mut settings_window, elwt, &settings_tx, &browser_config);
                         }
                         Key::Character("l") | Key::Character("L") => {
                             if let Some(active) = tab_manager.get_active_tab() {
@@ -321,56 +308,19 @@ fn main() {
                             }
                         }
                         Key::Character("t") | Key::Character("T") => {
-                            tab_manager.new_tab("https://petal.browser/local_cache".to_string());
-                            if let Some(new_tab) = tab_manager.get_active_tab().cloned() {
-                                match engine::builder::build_webview(
-                                    &window,
-                                    &adblock_engine,
-                                    &new_tab.url,
-                                    new_tab.id,
-                                    browser_config.hardware_acceleration,
-                                    ipc_tx.clone(),
-                                ) {
-                                    Ok(new_wv) => {
-                                        for wv in webviews.values() { wv.set_visible(false); }
-                                        webviews.insert(new_tab.id, new_wv);
-                                        omnibox.defocus();
-                                        window.request_redraw();
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Aviso: Falha ao abrir nova aba (falta de memória?): {}", e);
-                                        if let Some(idx) = tab_manager.tabs.iter().position(|t| t.id == new_tab.id) {
-                                            tab_manager.close_tab(idx);
-                                        }
-                                    }
-                                }
-                            }
+                            tab_manager.new_tab("petal://newtab".to_string());
+                            ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
+                            omnibox.defocus();
+                            window.request_redraw();
                         }
                         Key::Character("w") | Key::Character("W") => {
                             let idx = tab_manager.active_index;
                             if let Some(removed_id) = tab_manager.close_tab(idx) {
                                 webviews.remove(&removed_id);
                             }
-                            if let Some(active) = tab_manager.get_active_tab().cloned() {
-                                if let Some(wv) = webviews.get(&active.id) {
-                                    wv.set_visible(true);
-                                    wv.focus();
-                                } else {
-                                    match engine::builder::build_webview(
-                                        &window,
-                                        &adblock_engine,
-                                        &active.url,
-                                        active.id,
-                                        browser_config.hardware_acceleration,
-                                        ipc_tx.clone(),
-                                    ) {
-                                        Ok(new_wv) => { webviews.insert(active.id, new_wv); }
-                                        Err(e) => eprintln!("Falha silenciosa ao reconstruir a aba ativa: {}", e),
-                                    }
-                                }
-                                omnibox.defocus();
-                                window.request_redraw();
-                            }
+                            ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
+                            omnibox.defocus();
+                            window.request_redraw();
                         }
                         Key::Character("v") | Key::Character("V") => {
                             if omnibox.is_focused {
@@ -390,22 +340,10 @@ fn main() {
                             } else if next >= tab_manager.tabs.len() {
                                 next = 0;
                             }
-                            if let Some(old_tab) = tab_manager.get_active_tab().cloned() {
-                                let old_active = old_tab.id;
-                                if tab_manager.switch_tab(next) {
-                                    if let Some(new_tab) = tab_manager.get_active_tab() {
-                                        let new_active = new_tab.id;
-                                        if let Some(wv) = webviews.get(&old_active) {
-                                            wv.set_visible(false);
-                                        }
-                                        if let Some(wv) = webviews.get(&new_active) {
-                                            wv.set_visible(true);
-                                            wv.focus();
-                                        }
-                                        omnibox.defocus();
-                                        window.request_redraw();
-                                    }
-                                }
+                            if tab_manager.switch_tab(next) {
+                                ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
+                                omnibox.defocus();
+                                window.request_redraw();
                             }
                         }
                         _ => {}
@@ -570,7 +508,7 @@ fn main() {
                 }
             }
             Event::AboutToWait => {
-                // Checar IPC Wry
+                // Checar IPC Wry das abas normais
                 while let Ok(msg) = ipc_rx.try_recv() {
                     let parts: Vec<&str> = msg.splitn(3, '|').collect();
                     if parts.len() == 3 {
@@ -591,19 +529,21 @@ fn main() {
                                 }
                             } else if cmd == "focus_omnibox" {
                                 window.focus_window();
-                                use winit::raw_window_handle::HasWindowHandle;
-                                if let Ok(handle) = window.window_handle() {
-                                    if let winit::raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
-                                        unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(h.hwnd.get() as _); }
-                                    }
-                                }
+                                force_focus_window(&window);
                                 if let Some(active) = tab_manager.get_active_tab() {
                                     omnibox.focus(&active.url);
                                 }
                                 window.request_redraw();
                             }
                         }
-                    } else if let Some(payload) = msg.strip_prefix("save_config:") {
+                    } else {
+                        eprintln!("AVISO DE SEGURANÇA: Aba tentou enviar um formato IPC suspeito ou não autorizado: {}", msg);
+                    }
+                }
+
+                // Checar IPC Wry privilegiado (Janela de Configurações)
+                while let Ok(msg) = settings_rx.try_recv() {
+                    if let Some(payload) = msg.strip_prefix("save_config:") {
                         if let Ok(mut new_config) = serde_json::from_str::<crate::config::BrowserConfig>(payload) {
                             new_config.validate();
                             let hw = new_config.hardware_acceleration;
@@ -625,9 +565,9 @@ fn main() {
                 
                 // Ostrimmer
                 let active_wv = tab_manager.get_active_tab().map(|t| t.id).and_then(|id| webviews.get(&id));
-                if let Ok(memory::os_trim::TrimAction::EmergencyCrash) = os_trimmer.try_trim(active_wv) {
+                if let Ok(memory::os_trim::TrimAction::EmergencyFallback) = os_trimmer.try_trim(active_wv) {
                     if let Some(wv) = active_wv {
-                        let _ = wv.load_url("https://petal.browser/local_cache");
+                        let _ = wv.load_url("petal://newtab");
                     }
                 }
             }

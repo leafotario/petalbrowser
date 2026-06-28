@@ -42,6 +42,25 @@ pub fn build_webview(
         true
     });
 
+    builder = builder.with_custom_protocol("petal".into(), move |request| {
+        // Em URLs do tipo petal://newtab, o host geralmente é "newtab" e o path é vazio ou "/" dependendo do parser,
+        // mas vamos interceptar se contiver "newtab" em qualquer lugar.
+        let uri_str = request.uri().to_string();
+        if uri_str.contains("newtab") || uri_str.contains("local_cache") {
+            let content = b"<!DOCTYPE html><html><head><title>Nova Aba</title><style>body{background-color:#1e1e1e;color:#d4d4d4;font-family:monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;}h1{font-weight:normal;}</style></head><body><h1>Petal Browser</h1><p>Digite um endere\xc3\xa7o ou pesquisa na barra de tarefas.</p></body></html>";
+            wry::http::Response::builder()
+                .header(wry::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .body(content.to_vec().into())
+                .unwrap()
+        } else {
+            wry::http::Response::builder()
+                .status(404)
+                .body(b"Not Found".to_vec().into())
+                .unwrap()
+        }
+    });
+
+
     // Injeção de IPC para rastrear Document Title (nativo não suportado cross-platform sem extensões)
     builder = builder.with_ipc_handler(move |request| {
         let msg = request; // request is a String in wry
