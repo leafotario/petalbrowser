@@ -181,6 +181,7 @@ fn main() {
     
     let mut browser_config = config::BrowserConfig::load();
     let mut omnibox = ui::omnibox::OmniboxState::new();
+    let mut omnibox_layout = ui::omnibox::OmniboxLayout::new();
 
     let (ipc_tx, ipc_rx) = unbounded::<String>();
     let (settings_tx, settings_rx) = unbounded::<String>();
@@ -195,8 +196,13 @@ fn main() {
     let mut modifiers = ModifiersState::empty();
     let mut cursor_x = 0.0;
     let mut cursor_y = 0.0;
+    let mut dirty_region = ui::DirtyRegion::new();
+    let mut compositor = ui::UICompositor::new();
+
+    let mut redraw_pending = true;
 
     window.set_ime_allowed(true);
+    dirty_region.invalidate_all();
     window.request_redraw();
 
     if let Err(e) = event_loop.run(move |event, elwt| {
@@ -213,13 +219,13 @@ fn main() {
             Event::WindowEvent { event: WindowEvent::Focused(focused), .. } => {
                 if !focused {
                     omnibox.defocus();
-                    window.request_redraw();
+                    dirty_region.invalidate_omnibox();
                 }
             }
             Event::WindowEvent { event: WindowEvent::Ime(winit::event::Ime::Commit(text)), .. } => {
                 if omnibox.is_focused {
                     omnibox.insert_str(&text);
-                    window.request_redraw();
+                    dirty_region.invalidate_omnibox();
                 }
             }
             Event::WindowEvent { event: WindowEvent::ModifiersChanged(mods), .. } => {
@@ -244,20 +250,20 @@ fn main() {
                                 webviews.remove(&removed_id);
                             }
                             ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
-                            window.request_redraw();
+                            dirty_region.invalidate_chrome();
                         }
                         ui::TabHit::Tab(clicked_index) => {
                             if tab_manager.switch_tab(clicked_index) {
                                 ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
                                 omnibox.defocus();
-                                window.request_redraw();
+                                dirty_region.invalidate_chrome();
                             }
                         }
                         ui::TabHit::NewTabButton => {
                             tab_manager.new_tab("petal://newtab".to_string());
                             ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
                             omnibox.defocus();
-                            window.request_redraw();
+                            dirty_region.invalidate_chrome();
                         }
                         ui::TabHit::None => {}
                     }
@@ -285,7 +291,7 @@ fn main() {
                         ui::omnibox::OmniboxHit::Omnibox => {
                             if let Some(active) = tab_manager.get_active_tab() {
                                 omnibox.focus(&active.url);
-                                window.request_redraw();
+                                dirty_region.invalidate_omnibox();
                             }
                         }
                         ui::omnibox::OmniboxHit::None => {}
@@ -304,14 +310,14 @@ fn main() {
                         Key::Character("l") | Key::Character("L") => {
                             if let Some(active) = tab_manager.get_active_tab() {
                                 omnibox.focus(&active.url);
-                                window.request_redraw();
+                                dirty_region.invalidate_omnibox();
                             }
                         }
                         Key::Character("t") | Key::Character("T") => {
                             tab_manager.new_tab("petal://newtab".to_string());
                             ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
                             omnibox.defocus();
-                            window.request_redraw();
+                            dirty_region.invalidate_chrome();
                         }
                         Key::Character("w") | Key::Character("W") => {
                             let idx = tab_manager.active_index;
@@ -320,7 +326,7 @@ fn main() {
                             }
                             ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
                             omnibox.defocus();
-                            window.request_redraw();
+                            dirty_region.invalidate_chrome();
                         }
                         Key::Character("v") | Key::Character("V") => {
                             if omnibox.is_focused {
@@ -328,7 +334,7 @@ fn main() {
                                     if let Ok(text) = clipboard.get_text() {
                                         let clean_text = text.replace('\n', "").replace('\r', "");
                                         omnibox.insert_str(&clean_text);
-                                        window.request_redraw();
+                                        dirty_region.invalidate_omnibox();
                                     }
                                 }
                             }
@@ -343,7 +349,7 @@ fn main() {
                             if tab_manager.switch_tab(next) {
                                 ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
                                 omnibox.defocus();
-                                window.request_redraw();
+                                dirty_region.invalidate_chrome();
                             }
                         }
                         _ => {}
@@ -352,7 +358,7 @@ fn main() {
                     match logical_key.as_ref() {
                         Key::Named(NamedKey::Escape) => {
                             omnibox.defocus();
-                            window.request_redraw();
+                            dirty_region.invalidate_omnibox();
                         }
                         Key::Named(NamedKey::Enter) => {
                             let final_url = ui::omnibox::resolve_navigation_target(&omnibox.input, &browser_config.search_engine);
@@ -367,40 +373,44 @@ fn main() {
                                 }
                             }
                             omnibox.defocus();
-                            window.request_redraw();
+                            dirty_region.invalidate_chrome();
                         }
                         Key::Named(NamedKey::Backspace) => {
                             omnibox.backspace();
-                            window.request_redraw();
+                            dirty_region.invalidate_omnibox();
                         }
                         Key::Named(NamedKey::Delete) => {
                             omnibox.delete();
-                            window.request_redraw();
+                            dirty_region.invalidate_omnibox();
                         }
                         Key::Named(NamedKey::Home) => {
                             omnibox.home();
-                            window.request_redraw();
+                            dirty_region.invalidate_omnibox();
                         }
                         Key::Named(NamedKey::End) => {
                             omnibox.end();
-                            window.request_redraw();
+                            dirty_region.invalidate_omnibox();
                         }
-                        Key::Named(NamedKey::ArrowLeft) => { omnibox.arrow_left(); window.request_redraw(); }
-                        Key::Named(NamedKey::ArrowRight) => { omnibox.arrow_right(); window.request_redraw(); }
-                        Key::Named(NamedKey::ArrowUp) => { omnibox.arrow_up(); window.request_redraw(); }
-                        Key::Named(NamedKey::ArrowDown) => { omnibox.arrow_down(); window.request_redraw(); }
+                        Key::Named(NamedKey::ArrowLeft) => { omnibox.arrow_left(); dirty_region.invalidate_omnibox(); }
+                        Key::Named(NamedKey::ArrowRight) => { omnibox.arrow_right(); dirty_region.invalidate_omnibox(); }
+                        Key::Named(NamedKey::ArrowUp) => { omnibox.arrow_up(); dirty_region.invalidate_omnibox(); }
+                        Key::Named(NamedKey::ArrowDown) => { omnibox.arrow_down(); dirty_region.invalidate_omnibox(); }
                         Key::Named(NamedKey::Space) => {
                             omnibox.insert_char(' ');
-                            window.request_redraw();
+                            dirty_region.invalidate_omnibox();
                         }
                         _ => {
                             let mut handled = false;
                             if let Some(t) = text {
+                                let mut to_insert = String::with_capacity(t.len());
                                 for c in t.chars() {
                                     if !c.is_control() {
-                                        omnibox.insert_char(c);
-                                        handled = true;
+                                        to_insert.push(c);
                                     }
+                                }
+                                if !to_insert.is_empty() {
+                                    omnibox.insert_str(&to_insert);
+                                    handled = true;
                                 }
                             }
                             if !handled {
@@ -414,7 +424,7 @@ fn main() {
                                 }
                             }
                             if handled {
-                                window.request_redraw();
+                                dirty_region.invalidate_omnibox();
                             }
                         }
                     }
@@ -427,6 +437,7 @@ fn main() {
                             NonZeroU32::new(size.width).unwrap_or(NonZeroU32::MIN),
                             NonZeroU32::new(size.height).unwrap_or(NonZeroU32::MIN),
                         );
+                        dirty_region.invalidate_all();
                         window.request_redraw();
                         
                         for wv in webviews.values() {
@@ -452,6 +463,7 @@ fn main() {
             }
             Event::WindowEvent { window_id, event: WindowEvent::RedrawRequested, .. } => {
                 if window_id == window.id() {
+                    redraw_pending = false;
                     let size = window.inner_size();
                     if size.width > 0 && size.height > 0 {
                         match sb_surface.buffer_mut() {
@@ -462,15 +474,65 @@ fn main() {
 
                                 match expected_len {
                                     Some(len) if len == buffer.len() => {
-                                        // Limpa a tela inteira com tamanho coerente
-                                        buffer.fill(0xFF_12_12_12);
+
+                                        // 1. Manutenção de Camadas (LayerCaches)
+                                        let tabbar_h = ui::TABBAR_HEIGHT as usize;
+                                        let omnibox_h = ui::OMNIBOX_HEIGHT as usize;
+                                        let chrome_height = ui::CHROME_HEIGHT as usize;
+
+                                        compositor.tabbar.ensure_size(w, tabbar_h);
+                                        compositor.static_omnibox.ensure_size(w, omnibox_h);
+
+                                        if dirty_region.tabbar || dirty_region.whole_window {
+                                            compositor.tabbar.invalidate();
+                                        }
+
+                                        if dirty_region.omnibox || dirty_region.whole_window || compositor.omnibox_is_focused != omnibox.is_focused {
+                                            compositor.static_omnibox.invalidate();
+                                            compositor.omnibox_is_focused = omnibox.is_focused;
+                                        }
+
+                                        // 2. Repintar as Camadas (apenas se invalidadas de forma independente)
+                                        if !compositor.tabbar.valid {
+                                            ui::render_tab_bar(&mut compositor.tabbar.buffer, w, &tab_manager.tabs, tab_manager.active_index);
+                                            compositor.tabbar.valid = true;
+                                        }
+                                        if !compositor.static_omnibox.valid {
+                                            ui::omnibox::render_omnibox_static(&mut compositor.static_omnibox.buffer, w, omnibox.is_focused);
+                                            compositor.static_omnibox.valid = true;
+                                        }
+
+                                        // 3. Composição (Blitting iterativo para o Frame final)
+                                        if dirty_region.whole_window {
+                                            buffer.fill(0xFF_12_12_12); // Limpa o resto da tela
+                                        }
+
+                                        if dirty_region.tabbar || dirty_region.whole_window {
+                                            let cache_len = w * tabbar_h;
+                                            if buffer.len() >= cache_len && compositor.tabbar.buffer.len() >= cache_len {
+                                                buffer[..cache_len].copy_from_slice(&compositor.tabbar.buffer[..cache_len]);
+                                            }
+                                        }
+
+                                        if dirty_region.omnibox || dirty_region.whole_window {
+                                            let start = w * tabbar_h;
+                                            let end = w * chrome_height;
+                                            let cache_len = w * omnibox_h;
+                                            if buffer.len() >= end && compositor.static_omnibox.buffer.len() >= cache_len {
+                                                buffer[start..end].copy_from_slice(&compositor.static_omnibox.buffer[..cache_len]);
+                                            }
+                                        }
+
                                         
-                                        // Renderiza barra de abas
-                                        ui::render_tab_bar(&mut buffer, w, &tab_manager.tabs, tab_manager.active_index);
-                                        let url_to_display = tab_manager.get_active_tab().map(|t| t.url.as_str()).unwrap_or("");
-                                        ui::omnibox::render_omnibox(&mut buffer, w, &mut omnibox, url_to_display);
+                                        // 4. Desenho Dinâmico
+                                        if dirty_region.omnibox || dirty_region.tabbar || dirty_region.whole_window {
+                                            let url_to_display = tab_manager.get_active_tab().map(|t| t.url.as_str()).unwrap_or("");
+                                            omnibox_layout.update(&mut omnibox, w, url_to_display);
+                                            ui::omnibox::render_omnibox_dynamic(&mut buffer, w, &omnibox_layout);
+                                        }
                                         
                                         let _ = buffer.present();
+                                        dirty_region.reset();
                                     }
                                     _ => {
                                         eprintln!("AVISO: Redraw ignorado devido a discrepância do buffer. Real: {}, Esperado: {:?}", buffer.len(), expected_len);
@@ -517,13 +579,13 @@ fn main() {
                             let payload = parts[2].to_string();
                             if cmd == "title" {
                                 if tab_manager.update_tab_title(tab_id, payload) {
-                                    window.request_redraw();
+                                    dirty_region.invalidate_tabbar();
                                 } else {
                                     eprintln!("AVISO: Comando IPC (title) recebido para aba inativa/removida: {}", tab_id);
                                 }
                             } else if cmd == "url" {
                                 if tab_manager.update_tab_url(tab_id, payload) {
-                                    window.request_redraw();
+                                    dirty_region.invalidate_omnibox();
                                 } else {
                                     eprintln!("AVISO: Comando IPC (url) recebido para aba inativa/removida: {}", tab_id);
                                 }
@@ -533,7 +595,7 @@ fn main() {
                                 if let Some(active) = tab_manager.get_active_tab() {
                                     omnibox.focus(&active.url);
                                 }
-                                window.request_redraw();
+                                dirty_region.invalidate_omnibox();
                             }
                         }
                     } else {
@@ -569,6 +631,21 @@ fn main() {
                     if let Some(wv) = active_wv {
                         let _ = wv.load_url("petal://newtab");
                     }
+                }
+
+                // Cursor blink
+                if omnibox.is_focused {
+                    if omnibox_layout.last_cursor_blink.elapsed().as_millis() >= 500 {
+                        omnibox_layout.cursor_blink_visible = !omnibox_layout.cursor_blink_visible;
+                        omnibox_layout.last_cursor_blink = std::time::Instant::now();
+                        dirty_region.invalidate_omnibox();
+                    }
+                }
+
+                // Redraw coalescido: um único request_redraw para todos os eventos pendentes
+                if dirty_region.needs_redraw() && !redraw_pending {
+                    window.request_redraw();
+                    redraw_pending = true;
                 }
             }
             _ => (),

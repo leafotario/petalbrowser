@@ -6,6 +6,71 @@ pub const TABBAR_HEIGHT: u32 = 40;
 pub const OMNIBOX_HEIGHT: u32 = 46;
 pub const CHROME_HEIGHT: u32 = TABBAR_HEIGHT + OMNIBOX_HEIGHT;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirtyRegion {
+    pub omnibox: bool,
+    pub tabbar: bool,
+    pub whole_window: bool,
+}
+
+impl DirtyRegion {
+    pub fn new() -> Self { Self::default() }
+    
+    pub fn invalidate_omnibox(&mut self) { self.omnibox = true; }
+    pub fn invalidate_tabbar(&mut self) { self.tabbar = true; }
+    pub fn invalidate_chrome(&mut self) { self.omnibox = true; self.tabbar = true; }
+    pub fn invalidate_all(&mut self) { self.whole_window = true; self.omnibox = true; self.tabbar = true; }
+    
+    pub fn needs_redraw(&self) -> bool { self.omnibox || self.tabbar || self.whole_window }
+    
+    pub fn reset(&mut self) { *self = Self::default(); }
+}
+
+pub struct LayerCache {
+    pub buffer: Vec<u32>,
+    pub width: usize,
+    pub height: usize,
+    pub valid: bool,
+}
+
+impl LayerCache {
+    pub fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            width: 0,
+            height: 0,
+            valid: false,
+        }
+    }
+
+    pub fn ensure_size(&mut self, width: usize, height: usize) {
+        if self.width != width || self.height != height {
+            self.width = width;
+            self.height = height;
+            self.buffer.resize(width * height, 0);
+            self.valid = false;
+        }
+    }
+
+    pub fn invalidate(&mut self) { self.valid = false; }
+}
+
+pub struct UICompositor {
+    pub tabbar: LayerCache,
+    pub static_omnibox: LayerCache,
+    pub omnibox_is_focused: bool,
+}
+
+impl UICompositor {
+    pub fn new() -> Self {
+        Self {
+            tabbar: LayerCache::new(),
+            static_omnibox: LayerCache::new(),
+            omnibox_is_focused: false,
+        }
+    }
+}
+
 use crate::fsm::tab_manager::Tab;
 
 pub const TAB_WIDTH: usize = 220;
@@ -132,11 +197,30 @@ pub fn draw_char_clipped(
     let max_x = clip_x.saturating_add(clip_w).min(buf_width).min(x.saturating_add(8));
     if min_x >= max_x { return; }
 
+    // Fast-path para o caso em que o caractere está totalmente visível (sem clipping parcial)
+    if min_x == x && max_x == x + 8 && min_y == y && max_y == y + 16 {
+        for (row_idx, &row_val) in glyph.iter().enumerate() {
+            if row_val == 0 { continue; }
+            let row_base = (y + row_idx) * buf_width + x;
+            if (row_val & 0x80) != 0 { buffer[row_base]     = color; }
+            if (row_val & 0x40) != 0 { buffer[row_base + 1] = color; }
+            if (row_val & 0x20) != 0 { buffer[row_base + 2] = color; }
+            if (row_val & 0x10) != 0 { buffer[row_base + 3] = color; }
+            if (row_val & 0x08) != 0 { buffer[row_base + 4] = color; }
+            if (row_val & 0x04) != 0 { buffer[row_base + 5] = color; }
+            if (row_val & 0x02) != 0 { buffer[row_base + 6] = color; }
+            if (row_val & 0x01) != 0 { buffer[row_base + 7] = color; }
+        }
+        return;
+    }
+
+    // Caminho lento para caracteres clipados
     for py in min_y..max_y {
         let row_idx = py - y;
         let row_val = glyph[row_idx];
-        let row_base = py * buf_width;
+        if row_val == 0 { continue; }
         
+        let row_base = py * buf_width;
         for px in min_x..max_x {
             let col_idx = px - x;
             if (row_val & (1 << (7 - col_idx))) != 0 {

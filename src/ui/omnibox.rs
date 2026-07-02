@@ -8,6 +8,7 @@ pub enum OmniboxHit {
     Omnibox,
     None,
 }
+
 pub struct OmniboxState {
     pub is_focused: bool,
     pub input: String,
@@ -16,9 +17,21 @@ pub struct OmniboxState {
     pub history: VecDeque<String>,
     pub history_index: Option<usize>,
     pub scroll_offset: usize,
+
+    pub text_version: u64,
+    pub cursor_version: u64,
 }
 
 impl OmniboxState {
+    fn mark_text_changed(&mut self) {
+        self.text_version = self.text_version.wrapping_add(1);
+        self.cursor_version = self.cursor_version.wrapping_add(1);
+    }
+
+    fn mark_cursor_changed(&mut self) {
+        self.cursor_version = self.cursor_version.wrapping_add(1);
+    }
+
     pub fn safe_cursor(&self) -> usize {
         let mut idx = self.cursor_position.min(self.input.len());
         while idx > 0 && !self.input.is_char_boundary(idx) {
@@ -36,6 +49,9 @@ impl OmniboxState {
             history: VecDeque::with_capacity(16),
             history_index: None,
             scroll_offset: 0,
+            
+            text_version: 1,
+            cursor_version: 1,
         }
     }
 
@@ -46,6 +62,7 @@ impl OmniboxState {
         self.select_all_on_type = true;
         self.history_index = None;
         self.scroll_offset = 0;
+        self.mark_text_changed();
     }
 
     pub fn defocus(&mut self) {
@@ -53,6 +70,7 @@ impl OmniboxState {
         self.select_all_on_type = false;
         self.history_index = None;
         self.scroll_offset = 0;
+        self.mark_text_changed();
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -64,6 +82,7 @@ impl OmniboxState {
         if self.cursor_position <= self.input.len() {
             self.input.insert(self.cursor_position, c);
             self.cursor_position += c.len_utf8();
+            self.mark_text_changed();
         }
     }
 
@@ -76,6 +95,7 @@ impl OmniboxState {
         if self.cursor_position <= self.input.len() {
             self.input.insert_str(self.cursor_position, text);
             self.cursor_position += text.len();
+            self.mark_text_changed();
         }
     }
 
@@ -84,6 +104,7 @@ impl OmniboxState {
             self.input.clear();
             self.cursor_position = 0;
             self.select_all_on_type = false;
+            self.mark_text_changed();
             return;
         }
         let safe_cur = self.safe_cursor();
@@ -95,6 +116,7 @@ impl OmniboxState {
             if let Some(idx) = prev_char_idx {
                 self.input.remove(idx);
                 self.cursor_position = idx;
+                self.mark_text_changed();
             }
         }
     }
@@ -104,22 +126,26 @@ impl OmniboxState {
             self.input.clear();
             self.cursor_position = 0;
             self.select_all_on_type = false;
+            self.mark_text_changed();
             return;
         }
         let safe_cur = self.safe_cursor();
         if safe_cur < self.input.len() {
             self.input.remove(safe_cur);
+            self.mark_text_changed();
         }
     }
 
     pub fn home(&mut self) {
         self.select_all_on_type = false;
         self.cursor_position = 0;
+        self.mark_cursor_changed();
     }
 
     pub fn end(&mut self) {
         self.select_all_on_type = false;
         self.cursor_position = self.input.len();
+        self.mark_cursor_changed();
     }
 
     pub fn arrow_left(&mut self) {
@@ -132,6 +158,7 @@ impl OmniboxState {
                 .map(|c| safe_cur - c.len_utf8());
             if let Some(idx) = prev_char_idx {
                 self.cursor_position = idx;
+                self.mark_cursor_changed();
             }
         }
     }
@@ -142,6 +169,7 @@ impl OmniboxState {
         if safe_cur < self.input.len() {
             if let Some(c) = self.input[safe_cur..].chars().next() {
                 self.cursor_position = safe_cur + c.len_utf8();
+                self.mark_cursor_changed();
             }
         }
     }
@@ -157,6 +185,7 @@ impl OmniboxState {
         self.history_index = Some(new_idx);
         self.input = self.history[new_idx].clone();
         self.cursor_position = self.input.len();
+        self.mark_text_changed();
     }
 
     pub fn arrow_down(&mut self) {
@@ -167,10 +196,12 @@ impl OmniboxState {
                 self.history_index = Some(new_idx);
                 self.input = self.history[new_idx].clone();
                 self.cursor_position = self.input.len();
+                self.mark_text_changed();
             } else {
                 self.history_index = None;
                 self.input.clear();
                 self.cursor_position = 0;
+                self.mark_text_changed();
             }
         }
     }
@@ -184,26 +215,120 @@ impl OmniboxState {
         }
     }
 
-    pub fn update_scroll(&mut self, visible_chars: usize) {
+    pub fn update_scroll(&mut self, visible_chars: usize) -> bool {
         if !self.is_focused {
+            let changed = self.scroll_offset != 0;
             self.scroll_offset = 0;
-            return;
+            return changed;
         }
-        // FIX: quando a janela não tem espaço para nenhum caractere (visible_chars == 0),
-        // a lógica abaixo oscilaria infinitamente entre dois estados a cada frame.
-        // Zeramos o offset e retornamos, pois não há nada a exibir.
         if visible_chars == 0 {
+            let changed = self.scroll_offset != 0;
             self.scroll_offset = 0;
-            return;
+            return changed;
         }
         let safe_cur = self.safe_cursor();
         let cursor_char_idx = self.input[..safe_cur].chars().count();
+        let old_offset = self.scroll_offset;
+        
         if cursor_char_idx < self.scroll_offset {
             self.scroll_offset = cursor_char_idx;
         } else if cursor_char_idx >= self.scroll_offset + visible_chars {
-            // Seguro contra underflow: cursor_char_idx >= scroll_offset + visible_chars >= visible_chars,
-            // portanto cursor_char_idx - visible_chars >= 0 sempre.
             self.scroll_offset = cursor_char_idx - visible_chars + 1;
+        }
+        old_offset != self.scroll_offset
+    }
+}
+
+pub struct OmniboxLayout {
+    pub last_text_version: u64,
+    pub last_cursor_version: u64,
+    pub last_url: String,
+    pub last_width: usize,
+    
+    pub cached_visible_text: String,
+    pub cached_selection_width: usize,
+    pub cached_cursor_x_offset: Option<usize>,
+
+    pub cursor_blink_visible: bool,
+    pub last_cursor_blink: std::time::Instant,
+}
+
+impl OmniboxLayout {
+    pub fn new() -> Self {
+        Self {
+            last_text_version: 0,
+            last_cursor_version: 0,
+            last_url: String::new(),
+            last_width: 0,
+            cached_visible_text: String::new(),
+            cached_selection_width: 0,
+            cached_cursor_x_offset: None,
+            cursor_blink_visible: true,
+            last_cursor_blink: std::time::Instant::now(),
+        }
+    }
+
+    pub fn update(&mut self, state: &mut OmniboxState, window_width: usize, current_url: &str) {
+        let (_, omnibox_w) = get_omnibox_rect(window_width);
+        if omnibox_w <= 10 { return; }
+
+        let width_changed = self.last_width != omnibox_w;
+        let url_changed = !state.is_focused && self.last_url != current_url;
+        let mut force_text_rebuild = width_changed || url_changed;
+
+        self.last_width = omnibox_w;
+        if !state.is_focused {
+            self.last_url = current_url.to_string();
+        }
+
+        let visible_chars = omnibox_w.saturating_sub(20) / 8;
+        if state.update_scroll(visible_chars) {
+            force_text_rebuild = true;
+        }
+
+        let text_changed = force_text_rebuild || self.last_text_version != state.text_version;
+        let cursor_changed = text_changed || self.last_cursor_version != state.cursor_version;
+
+        if text_changed || cursor_changed {
+            self.cursor_blink_visible = true;
+            self.last_cursor_blink = std::time::Instant::now();
+        }
+
+        if text_changed {
+            let display_text = if state.is_focused { &state.input } else { current_url };
+            let chars: Vec<char> = display_text.chars().collect();
+            let start_idx = if state.is_focused { state.scroll_offset.min(chars.len()) } else { 0 };
+            
+            self.cached_visible_text = chars[start_idx..].iter().collect();
+
+            if state.is_focused && state.select_all_on_type && !display_text.is_empty() {
+                self.cached_selection_width = (self.cached_visible_text.chars().count() * 8).min(omnibox_w.saturating_sub(20));
+            } else {
+                self.cached_selection_width = 0;
+            }
+            
+            self.last_text_version = state.text_version;
+        }
+
+        if cursor_changed {
+            if state.is_focused && !state.select_all_on_type {
+                let safe_cur = state.safe_cursor();
+                let chars_before_cursor = state.input[..safe_cur].chars().count();
+                if chars_before_cursor >= state.scroll_offset {
+                    let offset = (chars_before_cursor - state.scroll_offset) * 8;
+                    if offset < omnibox_w.saturating_sub(10) {
+                        self.cached_cursor_x_offset = Some(offset);
+                    } else {
+                        self.cached_cursor_x_offset = None;
+                    }
+                } else {
+                    self.cached_cursor_x_offset = None;
+                }
+            } else {
+                self.cached_cursor_x_offset = None;
+            }
+            
+            self.last_cursor_version = state.cursor_version;
         }
     }
 }
@@ -283,13 +408,31 @@ pub fn hit_test_omnibox(cursor_x: f64, width: usize) -> OmniboxHit {
     OmniboxHit::None
 }
 
-pub fn render_omnibox(buffer: &mut [u32], width: usize, state: &mut OmniboxState, current_url: &str) {
+pub fn get_omnibox_rect(width: usize) -> (usize, usize) {
+    let button_w = 36;
+    let mut current_x = 10;
+    if width > 80 { current_x += button_w + 6; }
+    if width > 120 { current_x += button_w + 6; }
+    if width > 180 { current_x += button_w + 6; }
+
+    let mut settings_w = 0;
+    if width > 220 {
+        settings_w = button_w + 10;
+    }
+
+    let omnibox_x = current_x + 4;
+    let omnibox_w = width.saturating_sub(omnibox_x + settings_w).saturating_sub(4);
+    
+    (omnibox_x, omnibox_w)
+}
+
+pub fn render_omnibox_static(buffer: &mut [u32], width: usize, is_focused: bool) {
     if width < 2 { return; }
 
     let bg_color = 0xFF_28_28_28; // Matches active tab background
-    crate::ui::clear_rect(buffer, width, 0, crate::ui::TABBAR_HEIGHT as usize, width, crate::ui::OMNIBOX_HEIGHT as usize, bg_color);
+    crate::ui::clear_rect(buffer, width, 0, 0, width, crate::ui::OMNIBOX_HEIGHT as usize, bg_color);
 
-    let nav_y    = crate::ui::TABBAR_HEIGHT as usize + 8;
+    let nav_y    = 8; // Offset relativo ao início do buffer (já que a camada omnibox começa no y=0 dela própria)
     let button_h = 30;
     let button_w = 36;
     let btn_bg     = 0xFF_3C_3C_3C;
@@ -327,44 +470,39 @@ pub fn render_omnibox(buffer: &mut [u32], width: usize, state: &mut OmniboxState
         crate::ui::draw_char(buffer, width, settings_x + 14, nav_y + 7, 'S', icon_color);
     }
 
-    // Omnibox field
+    // Omnibox field background
     let omnibox_x = current_x + 4;
     let omnibox_w = width.saturating_sub(omnibox_x + settings_w).saturating_sub(4);
     
     if omnibox_w > 10 {
-        let field_bg = if state.is_focused { 0xFF_00_00_00 } else { 0xFF_11_11_11 };
+        let field_bg = if is_focused { 0xFF_00_00_00 } else { 0xFF_11_11_11 };
         crate::ui::draw_beveled_rect(buffer, width, omnibox_x, nav_y, omnibox_w, button_h, field_bg);
+    }
+}
 
-        let visible_chars = omnibox_w.saturating_sub(20) / 8;
-        state.update_scroll(visible_chars);
+pub fn render_omnibox_dynamic(buffer: &mut [u32], window_width: usize, layout: &OmniboxLayout) {
+    if window_width < 2 { return; }
+    
+    let (omnibox_x, omnibox_w) = get_omnibox_rect(window_width);
+    if omnibox_w <= 10 { return; }
 
-        let display_text = if state.is_focused { &state.input } else { current_url };
-        let chars: Vec<char> = display_text.chars().collect();
-        let start_idx = if state.is_focused { state.scroll_offset.min(chars.len()) } else { 0 };
-        let visible_text: String = chars[start_idx..].iter().collect();
+    let nav_y = crate::ui::TABBAR_HEIGHT as usize + 8;
 
-        if state.is_focused && state.select_all_on_type && !display_text.is_empty() {
-            let sel_w = (visible_text.chars().count() * 8).min(omnibox_w.saturating_sub(20));
-            crate::ui::clear_rect(buffer, width, omnibox_x + 10, nav_y + 7, sel_w, 16, 0xFF_00_55_AA);
-        }
+    if layout.cached_selection_width > 0 {
+        crate::ui::clear_rect(buffer, window_width, omnibox_x + 10, nav_y + 7, layout.cached_selection_width, 16, 0xFF_00_55_AA);
+    }
 
-        crate::ui::draw_string(
-            buffer, width,
-            omnibox_x + 10, nav_y + 7,
-            &visible_text,
-            0xFF_E0_E0_E0,
-            omnibox_w.saturating_sub(20),
-        );
+    crate::ui::draw_string(
+        buffer, window_width,
+        omnibox_x + 10, nav_y + 7,
+        &layout.cached_visible_text,
+        0xFF_E0_E0_E0,
+        omnibox_w.saturating_sub(20),
+    );
 
-        if state.is_focused && !state.select_all_on_type {
-            let safe_cur = state.safe_cursor();
-            let chars_before_cursor = state.input[..safe_cur].chars().count();
-            if chars_before_cursor >= state.scroll_offset {
-                let cursor_x = omnibox_x + 10 + ((chars_before_cursor - state.scroll_offset) * 8);
-                if cursor_x < omnibox_x + omnibox_w.saturating_sub(10) {
-                    crate::ui::clear_rect(buffer, width, cursor_x, nav_y + 7, 2, 16, 0xFF_FF_FF_FF);
-                }
-            }
+    if layout.cursor_blink_visible {
+        if let Some(cursor_offset) = layout.cached_cursor_x_offset {
+            crate::ui::clear_rect(buffer, window_width, omnibox_x + 10 + cursor_offset, nav_y + 7, 2, 16, 0xFF_FF_FF_FF);
         }
     }
 }

@@ -6,6 +6,9 @@ description = "O navegador com o footprint residente de RAM mais restrito já co
 authors = ["Petal Architect"]
 publish = false
 
+[features]
+default = []
+
 [dependencies]
 # Motor Webview Nativo
 wry = "0.35"
