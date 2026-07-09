@@ -2,10 +2,10 @@ use crate::config::BrowserConfig;
 
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
-     .replace('\'', "&#39;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 pub fn get_settings_html(config: &BrowserConfig) -> String {
@@ -89,7 +89,11 @@ pub fn get_settings_html(config: &BrowserConfig) -> String {
     </script>
 </body>
 </html>"#,
-        hw_checked = if config.hardware_acceleration { "checked" } else { "" },
+        hw_checked = if config.hardware_acceleration {
+            "checked"
+        } else {
+            ""
+        },
         engine = escape_html(&config.search_engine)
     )
 }

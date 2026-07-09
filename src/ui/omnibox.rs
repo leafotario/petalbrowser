@@ -49,7 +49,7 @@ impl OmniboxState {
             history: VecDeque::with_capacity(16),
             history_index: None,
             scroll_offset: 0,
-            
+
             text_version: 1,
             cursor_version: 1,
         }
@@ -176,10 +176,18 @@ impl OmniboxState {
 
     pub fn arrow_up(&mut self) {
         self.select_all_on_type = false;
-        if self.history.is_empty() { return; }
+        if self.history.is_empty() {
+            return;
+        }
 
         let new_idx = match self.history_index {
-            Some(idx) => if idx + 1 < self.history.len() { idx + 1 } else { idx },
+            Some(idx) => {
+                if idx + 1 < self.history.len() {
+                    idx + 1
+                } else {
+                    idx
+                }
+            }
             None => 0,
         };
         self.history_index = Some(new_idx);
@@ -229,7 +237,7 @@ impl OmniboxState {
         let safe_cur = self.safe_cursor();
         let cursor_char_idx = self.input[..safe_cur].chars().count();
         let old_offset = self.scroll_offset;
-        
+
         if cursor_char_idx < self.scroll_offset {
             self.scroll_offset = cursor_char_idx;
         } else if cursor_char_idx >= self.scroll_offset + visible_chars {
@@ -244,7 +252,7 @@ pub struct OmniboxLayout {
     pub last_cursor_version: u64,
     pub last_url: String,
     pub last_width: usize,
-    
+
     pub cached_visible_text: String,
     pub cached_selection_width: usize,
     pub cached_cursor_x_offset: Option<usize>,
@@ -270,7 +278,9 @@ impl OmniboxLayout {
 
     pub fn update(&mut self, state: &mut OmniboxState, window_width: usize, current_url: &str) {
         let (_, omnibox_w) = get_omnibox_rect(window_width);
-        if omnibox_w <= 10 { return; }
+        if omnibox_w <= 10 {
+            return;
+        }
 
         let width_changed = self.last_width != omnibox_w;
         let url_changed = !state.is_focused && self.last_url != current_url;
@@ -295,18 +305,27 @@ impl OmniboxLayout {
         }
 
         if text_changed {
-            let display_text = if state.is_focused { &state.input } else { current_url };
+            let display_text = if state.is_focused {
+                &state.input
+            } else {
+                current_url
+            };
             let chars: Vec<char> = display_text.chars().collect();
-            let start_idx = if state.is_focused { state.scroll_offset.min(chars.len()) } else { 0 };
-            
+            let start_idx = if state.is_focused {
+                state.scroll_offset.min(chars.len())
+            } else {
+                0
+            };
+
             self.cached_visible_text = chars[start_idx..].iter().collect();
 
             if state.is_focused && state.select_all_on_type && !display_text.is_empty() {
-                self.cached_selection_width = (self.cached_visible_text.chars().count() * 8).min(omnibox_w.saturating_sub(20));
+                self.cached_selection_width = (self.cached_visible_text.chars().count() * 8)
+                    .min(omnibox_w.saturating_sub(20));
             } else {
                 self.cached_selection_width = 0;
             }
-            
+
             self.last_text_version = state.text_version;
         }
 
@@ -327,7 +346,7 @@ impl OmniboxLayout {
             } else {
                 self.cached_cursor_x_offset = None;
             }
-            
+
             self.last_cursor_version = state.cursor_version;
         }
     }
@@ -337,7 +356,9 @@ fn minimal_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 3);
     for b in input.bytes() {
         match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push_str("%20"),
             _ => out.push_str(&format!("%{:02X}", b)),
         }
@@ -345,28 +366,92 @@ fn minimal_encode(input: &str) -> String {
     out
 }
 
-pub fn resolve_navigation_target(input: &str, search_engine: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() { return String::new(); }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavigationTarget {
+    Navigate(String),
+    BlockedScheme(String),
+    Empty,
+}
 
-    if trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.starts_with("file://")
-        || trimmed.starts_with("petal://")
-    {
-        return trimmed.to_string();
+fn has_whitespace(input: &str) -> bool {
+    input.chars().any(char::is_whitespace)
+}
+
+fn scheme_prefix(input: &str) -> Option<&str> {
+    let colon = input.find(':')?;
+    let prefix = &input[..colon];
+    let mut chars = prefix.chars();
+    let first = chars.next()?;
+
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+
+    if prefix.contains('.') || prefix.contains('/') || prefix.contains('\\') {
+        return None;
+    }
+
+    if chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-') {
+        Some(prefix)
+    } else {
+        None
+    }
+}
+
+fn is_dangerous_scheme(scheme: &str) -> bool {
+    matches!(scheme, "file" | "javascript" | "data")
+}
+
+fn is_allowed_internal_url(input: &str) -> bool {
+    input.eq_ignore_ascii_case("petal://newtab")
+}
+
+pub fn classify_navigation_target(input: &str, search_engine: &str) -> NavigationTarget {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return NavigationTarget::Empty;
+    }
+
+    if let Some(scheme) = scheme_prefix(trimmed) {
+        let normalized_scheme = scheme.to_ascii_lowercase();
+        if is_dangerous_scheme(&normalized_scheme) {
+            return NavigationTarget::BlockedScheme(normalized_scheme);
+        }
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return NavigationTarget::Navigate(trimmed.to_string());
+    }
+
+    if trimmed.to_ascii_lowercase().starts_with("petal:") {
+        if is_allowed_internal_url(trimmed) {
+            return NavigationTarget::Navigate(trimmed.to_string());
+        }
+        return NavigationTarget::BlockedScheme("petal".to_string());
     }
 
     if trimmed.starts_with("localhost:") || trimmed.starts_with("127.0.0.1") {
-        return format!("http://{}", trimmed);
+        return NavigationTarget::Navigate(format!("http://{}", trimmed));
     }
 
-    let looks_like_domain = trimmed.contains('.') && !trimmed.contains(' ');
+    // Unknown URL schemes from user input are blocked rather than sent to WebView.
+    if let Some(scheme) = scheme_prefix(trimmed) {
+        return NavigationTarget::BlockedScheme(scheme.to_ascii_lowercase());
+    }
+
+    let looks_like_domain = trimmed.contains('.') && !has_whitespace(trimmed);
     if looks_like_domain {
-        return format!("https://{}", trimmed);
+        return NavigationTarget::Navigate(format!("https://{}", trimmed));
     }
 
-    search_engine.replace("{}", &minimal_encode(trimmed))
+    NavigationTarget::Navigate(search_engine.replace("{}", &minimal_encode(trimmed)))
+}
+
+pub fn resolve_navigation_target(input: &str, search_engine: &str) -> String {
+    match classify_navigation_target(input, search_engine) {
+        NavigationTarget::Navigate(target) => target,
+        NavigationTarget::BlockedScheme(_) | NavigationTarget::Empty => String::new(),
+    }
 }
 
 pub fn hit_test_omnibox(cursor_x: f64, width: usize) -> OmniboxHit {
@@ -376,17 +461,23 @@ pub fn hit_test_omnibox(cursor_x: f64, width: usize) -> OmniboxHit {
 
     // Back
     if width > 80 {
-        if x >= current_x && x < current_x + button_w { return OmniboxHit::Back; }
+        if x >= current_x && x < current_x + button_w {
+            return OmniboxHit::Back;
+        }
         current_x += button_w + 6;
     }
     // Forward
     if width > 120 {
-        if x >= current_x && x < current_x + button_w { return OmniboxHit::Forward; }
+        if x >= current_x && x < current_x + button_w {
+            return OmniboxHit::Forward;
+        }
         current_x += button_w + 6;
     }
     // Refresh
     if width > 180 {
-        if x >= current_x && x < current_x + button_w { return OmniboxHit::Refresh; }
+        if x >= current_x && x < current_x + button_w {
+            return OmniboxHit::Refresh;
+        }
         current_x += button_w + 6;
     }
 
@@ -395,12 +486,16 @@ pub fn hit_test_omnibox(cursor_x: f64, width: usize) -> OmniboxHit {
     if width > 220 {
         settings_w = button_w + 10;
         let settings_x = width.saturating_sub(button_w + 10);
-        if x >= settings_x && x < settings_x + button_w { return OmniboxHit::Settings; }
+        if x >= settings_x && x < settings_x + button_w {
+            return OmniboxHit::Settings;
+        }
     }
 
     let omnibox_x = current_x + 4;
-    let omnibox_w = width.saturating_sub(omnibox_x + settings_w).saturating_sub(4);
-    
+    let omnibox_w = width
+        .saturating_sub(omnibox_x + settings_w)
+        .saturating_sub(4);
+
     if omnibox_w > 10 && x >= omnibox_x && x < omnibox_x + omnibox_w {
         return OmniboxHit::Omnibox;
     }
@@ -411,9 +506,15 @@ pub fn hit_test_omnibox(cursor_x: f64, width: usize) -> OmniboxHit {
 pub fn get_omnibox_rect(width: usize) -> (usize, usize) {
     let button_w = 36;
     let mut current_x = 10;
-    if width > 80 { current_x += button_w + 6; }
-    if width > 120 { current_x += button_w + 6; }
-    if width > 180 { current_x += button_w + 6; }
+    if width > 80 {
+        current_x += button_w + 6;
+    }
+    if width > 120 {
+        current_x += button_w + 6;
+    }
+    if width > 180 {
+        current_x += button_w + 6;
+    }
 
     let mut settings_w = 0;
     if width > 220 {
@@ -421,21 +522,33 @@ pub fn get_omnibox_rect(width: usize) -> (usize, usize) {
     }
 
     let omnibox_x = current_x + 4;
-    let omnibox_w = width.saturating_sub(omnibox_x + settings_w).saturating_sub(4);
-    
+    let omnibox_w = width
+        .saturating_sub(omnibox_x + settings_w)
+        .saturating_sub(4);
+
     (omnibox_x, omnibox_w)
 }
 
 pub fn render_omnibox_static(buffer: &mut [u32], width: usize, is_focused: bool) {
-    if width < 2 { return; }
+    if width < 2 {
+        return;
+    }
 
     let bg_color = 0xFF_28_28_28; // Matches active tab background
-    crate::ui::clear_rect(buffer, width, 0, 0, width, crate::ui::OMNIBOX_HEIGHT as usize, bg_color);
+    crate::ui::clear_rect(
+        buffer,
+        width,
+        0,
+        0,
+        width,
+        crate::ui::OMNIBOX_HEIGHT as usize,
+        bg_color,
+    );
 
-    let nav_y    = 8; // Offset relativo ao início do buffer (já que a camada omnibox começa no y=0 dela própria)
+    let nav_y = 8; // Offset relativo ao início do buffer (já que a camada omnibox começa no y=0 dela própria)
     let button_h = 30;
     let button_w = 36;
-    let btn_bg     = 0xFF_3C_3C_3C;
+    let btn_bg = 0xFF_3C_3C_3C;
     let icon_color = 0xFF_DD_DD_DD;
 
     let mut current_x = 10;
@@ -472,29 +585,51 @@ pub fn render_omnibox_static(buffer: &mut [u32], width: usize, is_focused: bool)
 
     // Omnibox field background
     let omnibox_x = current_x + 4;
-    let omnibox_w = width.saturating_sub(omnibox_x + settings_w).saturating_sub(4);
-    
+    let omnibox_w = width
+        .saturating_sub(omnibox_x + settings_w)
+        .saturating_sub(4);
+
     if omnibox_w > 10 {
-        let field_bg = if is_focused { 0xFF_00_00_00 } else { 0xFF_11_11_11 };
-        crate::ui::draw_beveled_rect(buffer, width, omnibox_x, nav_y, omnibox_w, button_h, field_bg);
+        let field_bg = if is_focused {
+            0xFF_00_00_00
+        } else {
+            0xFF_11_11_11
+        };
+        crate::ui::draw_beveled_rect(
+            buffer, width, omnibox_x, nav_y, omnibox_w, button_h, field_bg,
+        );
     }
 }
 
 pub fn render_omnibox_dynamic(buffer: &mut [u32], window_width: usize, layout: &OmniboxLayout) {
-    if window_width < 2 { return; }
-    
+    if window_width < 2 {
+        return;
+    }
+
     let (omnibox_x, omnibox_w) = get_omnibox_rect(window_width);
-    if omnibox_w <= 10 { return; }
+    if omnibox_w <= 10 {
+        return;
+    }
 
     let nav_y = crate::ui::TABBAR_HEIGHT as usize + 8;
 
     if layout.cached_selection_width > 0 {
-        crate::ui::clear_rect(buffer, window_width, omnibox_x + 10, nav_y + 7, layout.cached_selection_width, 16, 0xFF_00_55_AA);
+        crate::ui::clear_rect(
+            buffer,
+            window_width,
+            omnibox_x + 10,
+            nav_y + 7,
+            layout.cached_selection_width,
+            16,
+            0xFF_00_55_AA,
+        );
     }
 
     crate::ui::draw_string(
-        buffer, window_width,
-        omnibox_x + 10, nav_y + 7,
+        buffer,
+        window_width,
+        omnibox_x + 10,
+        nav_y + 7,
         &layout.cached_visible_text,
         0xFF_E0_E0_E0,
         omnibox_w.saturating_sub(20),
@@ -502,7 +637,120 @@ pub fn render_omnibox_dynamic(buffer: &mut [u32], window_width: usize, layout: &
 
     if layout.cursor_blink_visible {
         if let Some(cursor_offset) = layout.cached_cursor_x_offset {
-            crate::ui::clear_rect(buffer, window_width, omnibox_x + 10 + cursor_offset, nav_y + 7, 2, 16, 0xFF_FF_FF_FF);
+            crate::ui::clear_rect(
+                buffer,
+                window_width,
+                omnibox_x + 10 + cursor_offset,
+                nav_y + 7,
+                2,
+                16,
+                0xFF_FF_FF_FF,
+            );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SEARCH_ENGINE: &str = "https://search.example/?q={}";
+
+    #[test]
+    fn allows_http_and_https_urls() {
+        assert_eq!(
+            classify_navigation_target("http://example.com", SEARCH_ENGINE),
+            NavigationTarget::Navigate("http://example.com".to_string())
+        );
+        assert_eq!(
+            classify_navigation_target("https://example.com", SEARCH_ENGINE),
+            NavigationTarget::Navigate("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn converts_plain_domain_to_https() {
+        assert_eq!(
+            classify_navigation_target("example.com", SEARCH_ENGINE),
+            NavigationTarget::Navigate("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn converts_localhost_to_http() {
+        assert_eq!(
+            classify_navigation_target("localhost:3000", SEARCH_ENGINE),
+            NavigationTarget::Navigate("http://localhost:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn turns_common_text_into_search() {
+        assert_eq!(
+            classify_navigation_target("rust browser project", SEARCH_ENGINE),
+            NavigationTarget::Navigate(
+                "https://search.example/?q=rust%20browser%20project".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn allows_newtab_internal_url() {
+        assert_eq!(
+            classify_navigation_target("petal://newtab", SEARCH_ENGINE),
+            NavigationTarget::Navigate("petal://newtab".to_string())
+        );
+    }
+
+    #[test]
+    fn blocks_file_scheme() {
+        assert_eq!(
+            classify_navigation_target("file:///C:/Windows/win.ini", SEARCH_ENGINE),
+            NavigationTarget::BlockedScheme("file".to_string())
+        );
+        assert_eq!(
+            resolve_navigation_target("file:///C:/Windows/win.ini", SEARCH_ENGINE),
+            ""
+        );
+    }
+
+    #[test]
+    fn blocks_javascript_scheme_case_insensitively() {
+        assert_eq!(
+            classify_navigation_target("JavaScript:alert(1)", SEARCH_ENGINE),
+            NavigationTarget::BlockedScheme("javascript".to_string())
+        );
+    }
+
+    #[test]
+    fn blocks_data_scheme() {
+        assert_eq!(
+            classify_navigation_target("data:text/html,<h1>x</h1>", SEARCH_ENGINE),
+            NavigationTarget::BlockedScheme("data".to_string())
+        );
+    }
+
+    #[test]
+    fn blocks_unknown_scheme() {
+        assert_eq!(
+            classify_navigation_target("custom:payload", SEARCH_ENGINE),
+            NavigationTarget::BlockedScheme("custom".to_string())
+        );
+    }
+
+    #[test]
+    fn blocks_malformed_http_scheme() {
+        assert_eq!(
+            classify_navigation_target("http:example.com", SEARCH_ENGINE),
+            NavigationTarget::BlockedScheme("http".to_string())
+        );
+    }
+
+    #[test]
+    fn keeps_host_port_as_domain_navigation() {
+        assert_eq!(
+            classify_navigation_target("example.com:8080", SEARCH_ENGINE),
+            NavigationTarget::Navigate("https://example.com:8080".to_string())
+        );
     }
 }

@@ -1,4 +1,3 @@
-
 #[derive(Clone)]
 pub struct AdblockEngine {
     rules: Vec<(String, String)>,
@@ -8,8 +7,8 @@ impl AdblockEngine {
     pub fn start() -> Self {
         // Inicializa com uma lista de domínios conhecidos de anúncios e tracking.
         // NOTA DE ARQUITETURA: O motor é estritamente Host-Only (DNS-level like).
-        // Regras contendo caminhos (paths) como "facebook.com/tr/" são mortas e 
-        // nunca funcionarão porque o avaliador extrai apenas o host. 
+        // Regras contendo caminhos (paths) como "facebook.com/tr/" são mortas e
+        // nunca funcionarão porque o avaliador extrai apenas o host.
         // Para manter o footprint de RAM mínimo, mantemos a simplicidade de Host-Only.
         let mut rules = Vec::new();
         let base_list = vec![
@@ -29,22 +28,24 @@ impl AdblockEngine {
             "hotjar.com",
             "clarity.ms",
         ];
-        
+
         for d in base_list {
             // Pré-computa o sufixo (".dominio") para evitar alocações no caminho quente
             rules.push((d.to_string(), format!(".{}", d)));
         }
 
-        Self {
-            rules,
-        }
+        Self { rules }
     }
 
     fn extract_host(url: &str) -> Option<&str> {
         let after_scheme = url.split("://").nth(1).unwrap_or(url);
         let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
         let host = host_port.split(':').next().unwrap_or(host_port);
-        if host.is_empty() { None } else { Some(host) }
+        if host.is_empty() {
+            None
+        } else {
+            Some(host)
+        }
     }
 
     /// Analisa se a URL dada (navegação) pertence a algum domínio bloqueado.
@@ -53,7 +54,7 @@ impl AdblockEngine {
     pub fn should_block(&self, url: &str) -> bool {
         // Normaliza a URL
         let normalized = url.to_lowercase();
-        
+
         // Exceções para esquemas nativos/locais globais
         if normalized.starts_with("petal://") || normalized.starts_with("file://") {
             return false;

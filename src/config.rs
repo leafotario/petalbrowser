@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -52,12 +52,18 @@ impl BrowserConfig {
                 p.push(".config");
                 p
             } else {
-                return Err("Variáveis de ambiente XDG_CONFIG_HOME ou HOME não encontradas no Linux/Unix.".to_string());
+                return Err(
+                    "Variáveis de ambiente XDG_CONFIG_HOME ou HOME não encontradas no Linux/Unix."
+                        .to_string(),
+                );
             }
         };
         base.push("PetalBrowser");
         if let Err(e) = fs::create_dir_all(&base) {
-            return Err(format!("Falha de permissão ao criar diretório de configuração ({:?}): {}", base, e));
+            return Err(format!(
+                "Falha de permissão ao criar diretório de configuração ({:?}): {}",
+                base, e
+            ));
         }
         Ok(base)
     }
@@ -83,7 +89,10 @@ impl BrowserConfig {
                     Some('n') => out.push('\n'),
                     Some('r') => out.push('\r'),
                     Some('\\') => out.push('\\'),
-                    Some(other) => { out.push('\\'); out.push(other); }
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
                     None => out.push('\\'),
                 }
             } else {
@@ -106,20 +115,18 @@ impl BrowserConfig {
         // 1. Tentar carregar JSON moderno
         if json_path.exists() {
             match fs::read_to_string(&json_path) {
-                Ok(content) => {
-                    match serde_json::from_str::<BrowserConfig>(&content) {
-                        Ok(mut c) => {
-                            c.validate();
-                            return c;
-                        }
-                        Err(e) => {
-                            println!("⚠️ Erro ao decodificar config.json: {}. Criando backup do arquivo corrompido.", e);
-                            let mut corrupt_path = json_path.clone();
-                            corrupt_path.set_extension("json.corrupted");
-                            let _ = fs::rename(&json_path, corrupt_path);
-                        }
+                Ok(content) => match serde_json::from_str::<BrowserConfig>(&content) {
+                    Ok(mut c) => {
+                        c.validate();
+                        return c;
                     }
-                }
+                    Err(e) => {
+                        println!("⚠️ Erro ao decodificar config.json: {}. Criando backup do arquivo corrompido.", e);
+                        let mut corrupt_path = json_path.clone();
+                        corrupt_path.set_extension("json.corrupted");
+                        let _ = fs::rename(&json_path, corrupt_path);
+                    }
+                },
                 Err(e) => {
                     println!("⚠️ Falha de I/O ao ler config.json: {}. O arquivo original não será modificado.", e);
                     return config;
@@ -132,24 +139,33 @@ impl BrowserConfig {
                     if let Ok(content) = fs::read_to_string(&ini_path) {
                         for line in content.lines() {
                             let trimmed = line.trim();
-                            if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+                            if trimmed.is_empty() || trimmed.starts_with('#') {
+                                continue;
+                            }
                             if let Some((k, v)) = trimmed.split_once('=') {
                                 let k = k.trim();
                                 let v = v.trim();
                                 match k {
-                                    "search_engine" => config.search_engine = Self::unescape_value_legacy(v),
-                                    "hardware_acceleration" => config.hardware_acceleration = v == "true",
+                                    "search_engine" => {
+                                        config.search_engine = Self::unescape_value_legacy(v)
+                                    }
+                                    "hardware_acceleration" => {
+                                        config.hardware_acceleration = v == "true"
+                                    }
                                     _ => {}
                                 }
                             }
                         }
                     }
-                    
+
                     config.validate();
-                    
+
                     // Grava em JSON para completar a migração e renomeia o ini
                     if let Err(e) = config.save() {
-                        println!("⚠️ Aviso: Falha ao migrar config.ini para config.json: {}", e);
+                        println!(
+                            "⚠️ Aviso: Falha ao migrar config.ini para config.json: {}",
+                            e
+                        );
                     } else {
                         let mut bak_path = ini_path.clone();
                         bak_path.set_extension("ini.bak");
@@ -161,7 +177,10 @@ impl BrowserConfig {
 
             // 3. Primeira execução limpa
             if let Err(e) = config.save() {
-                println!("⚠️ Aviso: Falha na persistência ao tentar criar config.json. Detalhe: {}", e);
+                println!(
+                    "⚠️ Aviso: Falha na persistência ao tentar criar config.json. Detalhe: {}",
+                    e
+                );
             }
         }
         config
@@ -171,19 +190,25 @@ impl BrowserConfig {
         let path = Self::json_path()?;
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Erro ao serializar JSON: {}", e))?;
-            
+
         let mut tmp_path = path.clone();
         tmp_path.set_extension("tmp");
-        
+
         if let Err(e) = fs::write(&tmp_path, &content) {
-            return Err(format!("Erro de disco ao escrever no temporário ({:?}): {}", tmp_path, e));
+            return Err(format!(
+                "Erro de disco ao escrever no temporário ({:?}): {}",
+                tmp_path, e
+            ));
         }
-        
+
         if let Err(e) = fs::rename(&tmp_path, &path) {
             let _ = fs::remove_file(&tmp_path);
-            return Err(format!("Erro ao renomear arquivo temporário para final: {}", e));
+            return Err(format!(
+                "Erro ao renomear arquivo temporário para final: {}",
+                e
+            ));
         }
-        
+
         Ok(())
     }
 }

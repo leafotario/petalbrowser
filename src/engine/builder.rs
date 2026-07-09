@@ -1,8 +1,8 @@
+use crate::network::adblock::AdblockEngine;
 use winit::window::Window;
-use wry::{Rect, WebView, WebViewBuilder};
 #[cfg(target_os = "windows")]
 use wry::WebViewBuilderExtWindows;
-use crate::network::adblock::AdblockEngine;
+use wry::{Rect, WebView, WebViewBuilder};
 
 pub fn build_webview(
     window: &Window,
@@ -10,7 +10,7 @@ pub fn build_webview(
     url: &str,
     tab_id: u32,
     hardware_acceleration: bool,
-    ipc_tx: crossbeam_channel::Sender<String>,
+    ipc_tx: crossbeam_channel::Sender<crate::ipc::BrowserIpcEnvelope>,
 ) -> wry::Result<WebView> {
     let mut builder = WebViewBuilder::new(window);
 
@@ -30,7 +30,10 @@ pub fn build_webview(
     builder = builder.with_on_page_load_handler(move |event, url| {
         // Envia apenas quando o carregamento termina ou muda
         if let wry::PageLoadEvent::Finished = event {
-            let _ = tx_nav.send(format!("{}|url|{}", tab_id, url));
+            let _ = tx_nav.send(crate::ipc::BrowserIpcEnvelope::trusted_tab_event(
+                tab_id,
+                format!("{}|url|{}", tab_id, url),
+            ));
         }
     });
 
@@ -60,15 +63,16 @@ pub fn build_webview(
         }
     });
 
-
     // Injeção de IPC para rastrear Document Title (nativo não suportado cross-platform sem extensões)
     builder = builder.with_ipc_handler(move |request| {
-        let msg = request; // request is a String in wry
-        let _ = ipc_tx.send(msg);
+        let _ = ipc_tx.send(crate::ipc::BrowserIpcEnvelope::content_webview(
+            tab_id, request,
+        ));
     });
 
     let blocked_array_js = adblock_engine.get_blocked_domains_js_array();
-    let init_script = format!(r#"
+    let init_script = format!(
+        r#"
         (function() {{
             if (window.__petal_init) return;
             window.__petal_init = true;
@@ -207,7 +211,9 @@ pub fn build_webview(
                 }}
             }} catch(e) {{}}
         }})();
-    "#, blocked_array_js, tab_id, tab_id);
+    "#,
+        blocked_array_js, tab_id, tab_id
+    );
     builder = builder.with_initialization_script(&init_script);
 
     #[cfg(target_os = "windows")]

@@ -1,9 +1,10 @@
+mod config;
 mod engine;
 mod fsm;
+mod ipc;
 mod memory;
 mod network;
 mod ui;
-mod config;
 
 use crossbeam_channel::unbounded;
 use softbuffer::{Context, Surface};
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 use winit::{
     event::{ElementState, Event, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    keyboard::{Key, NamedKey, ModifiersState},
+    keyboard::{Key, ModifiersState, NamedKey},
     window::WindowBuilder,
 };
 
@@ -42,56 +43,57 @@ fn force_focus_window(_window: &winit::window::Window) {
     // No-op for non-Windows platforms
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveWebViewState {
+    NoActiveTab,
+    Ready,
+    CreationFailed,
+}
+
 fn ensure_active_webview(
     tab_manager: &mut fsm::tab_manager::TabManager,
     webviews: &mut std::collections::HashMap<u32, wry::WebView>,
     window: &winit::window::Window,
     adblock_engine: &network::adblock::AdblockEngine,
     hardware_acceleration: bool,
-    ipc_tx: crossbeam_channel::Sender<String>,
-) {
-    loop {
-        if let Some(active) = tab_manager.get_active_tab().cloned() {
-            for (id, wv) in webviews.iter() {
-                if *id != active.id {
-                    wv.set_visible(false);
-                }
-            }
+    ipc_tx: crossbeam_channel::Sender<ipc::BrowserIpcEnvelope>,
+) -> ActiveWebViewState {
+    let Some(active) = tab_manager.get_active_tab().cloned() else {
+        return ActiveWebViewState::NoActiveTab;
+    };
 
-            if let Some(wv) = webviews.get(&active.id) {
-                wv.set_visible(true);
-                wv.focus();
-                break;
-            } else {
-                match engine::builder::build_webview(
-                    window,
-                    adblock_engine,
-                    &active.url,
-                    active.id,
-                    hardware_acceleration,
-                    ipc_tx.clone(),
-                ) {
-                    Ok(new_wv) => {
-                        new_wv.set_visible(true);
-                        new_wv.focus();
-                        webviews.insert(active.id, new_wv);
-                        break;
-                    }
-                    Err(e) => {
-                        eprintln!("FALHA FATAL EM ABA: Não foi possível recriar WebView para a aba ativa (ID {}): {}", active.id, e);
-                        let idx = tab_manager.active_index;
-                        if let Some(removed_id) = tab_manager.close_tab(idx) {
-                            webviews.remove(&removed_id);
-                        }
-                        if tab_manager.tabs.is_empty() {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-            }
-        } else {
-            break;
+    for (id, wv) in webviews.iter() {
+        if *id != active.id {
+            wv.set_visible(false);
+        }
+    }
+
+    if let Some(wv) = webviews.get(&active.id) {
+        wv.set_visible(true);
+        wv.focus();
+        return ActiveWebViewState::Ready;
+    }
+
+    match engine::builder::build_webview(
+        window,
+        adblock_engine,
+        &active.url,
+        active.id,
+        hardware_acceleration,
+        ipc_tx,
+    ) {
+        Ok(new_wv) => {
+            new_wv.set_visible(true);
+            new_wv.focus();
+            webviews.insert(active.id, new_wv);
+            ActiveWebViewState::Ready
+        }
+        Err(e) => {
+            eprintln!(
+                "FALHA FATAL EM ABA: Não foi possível criar WebView para a aba ativa (ID {}): {}. A aba será mantida sem WebView para evitar loop de recriação.",
+                active.id, e
+            );
+            ActiveWebViewState::CreationFailed
         }
     }
 }
@@ -118,12 +120,12 @@ fn open_settings_window(
                     })
                     .with_html(ui::settings::get_settings_html(browser_config))
                 {
-                    Ok(builder) => {
-                        match builder.build() {
-                            Ok(swv) => *settings_window = Some((sw, swv)),
-                            Err(e) => eprintln!("Aviso: Falha ao construir WebView de configurações: {}", e),
+                    Ok(builder) => match builder.build() {
+                        Ok(swv) => *settings_window = Some((sw, swv)),
+                        Err(e) => {
+                            eprintln!("Aviso: Falha ao construir WebView de configurações: {}", e)
                         }
-                    }
+                    },
                     Err(e) => eprintln!("Aviso: Falha na montagem de HTML das configs: {:?}", e),
                 }
             }
@@ -136,7 +138,10 @@ fn main() {
     let event_loop = match EventLoop::new() {
         Ok(el) => el,
         Err(e) => {
-            eprintln!("FALHA FATAL: Não foi possível instanciar o EventLoop do sistema: {}", e);
+            eprintln!(
+                "FALHA FATAL: Não foi possível instanciar o EventLoop do sistema: {}",
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -152,7 +157,10 @@ fn main() {
     let window = match window_builder.build(&event_loop) {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("FALHA FATAL: Falha arquitetural crítica ao criar a janela principal: {}", e);
+            eprintln!(
+                "FALHA FATAL: Falha arquitetural crítica ao criar a janela principal: {}",
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -168,27 +176,36 @@ fn main() {
     let mut sb_surface = match unsafe { Surface::new(&sb_context, &window) } {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("FALHA FATAL: Não foi possível criar superfície gráfica (Softbuffer). Erro: {:?}", e);
+            eprintln!(
+                "FALHA FATAL: Não foi possível criar superfície gráfica (Softbuffer). Erro: {:?}",
+                e
+            );
             std::process::exit(1);
         }
     };
 
     let adblock_engine = network::adblock::AdblockEngine::start();
 
-
     let mut tab_manager = fsm::tab_manager::TabManager::new();
     let mut os_trimmer = memory::os_trim::OsTrimmer::new();
-    
+
     let mut browser_config = config::BrowserConfig::load();
     let mut omnibox = ui::omnibox::OmniboxState::new();
     let mut omnibox_layout = ui::omnibox::OmniboxLayout::new();
 
-    let (ipc_tx, ipc_rx) = unbounded::<String>();
+    let (ipc_tx, ipc_rx) = unbounded::<ipc::BrowserIpcEnvelope>();
     let (settings_tx, settings_rx) = unbounded::<String>();
 
     let mut webviews = std::collections::HashMap::<u32, wry::WebView>::new();
-    
-    ensure_active_webview(&mut tab_manager, &mut webviews, &window, &adblock_engine, browser_config.hardware_acceleration, ipc_tx.clone());
+
+    ensure_active_webview(
+        &mut tab_manager,
+        &mut webviews,
+        &window,
+        &adblock_engine,
+        browser_config.hardware_acceleration,
+        ipc_tx.clone(),
+    );
     if tab_manager.tabs.is_empty() {
         eprintln!("AVISO: Nenhuma aba ativa na inicialização. Iniciando em estado vazio.");
     }
@@ -212,30 +229,53 @@ fn main() {
             Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. } => {
                 if window_id == window.id() {
                     elwt.exit();
-                } else {
+                } else if settings_window
+                    .as_ref()
+                    .is_some_and(|(sw, _)| window_id == sw.id())
+                {
                     settings_window = None;
                 }
             }
-            Event::WindowEvent { event: WindowEvent::Focused(focused), .. } => {
+            Event::WindowEvent { window_id, event: WindowEvent::Focused(focused), .. }
+                if window_id == window.id() =>
+            {
                 if !focused {
                     omnibox.defocus();
                     dirty_region.invalidate_omnibox();
                 }
             }
-            Event::WindowEvent { event: WindowEvent::Ime(winit::event::Ime::Commit(text)), .. } => {
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Ime(winit::event::Ime::Commit(text)),
+                ..
+            } if window_id == window.id() => {
                 if omnibox.is_focused {
                     omnibox.insert_str(&text);
                     dirty_region.invalidate_omnibox();
                 }
             }
-            Event::WindowEvent { event: WindowEvent::ModifiersChanged(mods), .. } => {
+            Event::WindowEvent { window_id, event: WindowEvent::ModifiersChanged(mods), .. }
+                if window_id == window.id() =>
+            {
                 modifiers = mods.state();
             }
-            Event::WindowEvent { event: WindowEvent::CursorMoved { position, .. }, .. } => {
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::CursorMoved { position, .. },
+                ..
+            } if window_id == window.id() => {
                 cursor_x = position.x;
                 cursor_y = position.y;
             }
-            Event::WindowEvent { event: WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }, .. } => {
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                },
+                ..
+            } if window_id == window.id() => {
                 if cursor_y < ui::CHROME_HEIGHT as f64 {
                     window.focus_window();
                     force_focus_window(&window);
@@ -298,10 +338,24 @@ fn main() {
                     }
                 }
             }
-            Event::WindowEvent { event: WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. }, .. }, .. } => {
+            Event::WindowEvent {
+                window_id,
+                event:
+                    WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                state: ElementState::Pressed,
+                                logical_key,
+                                text,
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            } if window_id == window.id() => {
                 let ctrl = modifiers.control_key();
                 let shift = modifiers.shift_key();
-                
+
                 if ctrl {
                     match logical_key.as_ref() {
                         Key::Character(",") => {
@@ -332,7 +386,7 @@ fn main() {
                             if omnibox.is_focused {
                                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
                                     if let Ok(text) = clipboard.get_text() {
-                                        let clean_text = text.replace('\n', "").replace('\r', "");
+                                        let clean_text = text.replace(['\n', '\r'], "");
                                         omnibox.insert_str(&clean_text);
                                         dirty_region.invalidate_omnibox();
                                     }
@@ -368,7 +422,7 @@ fn main() {
                                     let active_id = active_tab.id;
                                     tab_manager.update_active_url(final_url.clone());
                                     if let Some(wv) = webviews.get(&active_id) {
-                                        let _ = wv.load_url(&final_url);
+                                        wv.load_url(&final_url);
                                     }
                                 }
                             }
@@ -439,7 +493,7 @@ fn main() {
                         );
                         dirty_region.invalidate_all();
                         window.request_redraw();
-                        
+
                         for wv in webviews.values() {
                             let bounds = wry::Rect {
                                 x: 0,
@@ -447,11 +501,11 @@ fn main() {
                                 width: size.width,
                                 height: size.height.saturating_sub(ui::CHROME_HEIGHT),
                             };
-                            let _ = wv.set_bounds(bounds);
+                            wv.set_bounds(bounds);
                         }
                     } else if let Some((sw, swv)) = settings_window.as_ref() {
                         if window_id == sw.id() {
-                            let _ = swv.set_bounds(wry::Rect {
+                            swv.set_bounds(wry::Rect {
                                 x: 0,
                                 y: 0,
                                 width: size.width,
@@ -523,14 +577,14 @@ fn main() {
                                             }
                                         }
 
-                                        
+
                                         // 4. Desenho Dinâmico
                                         if dirty_region.omnibox || dirty_region.tabbar || dirty_region.whole_window {
                                             let url_to_display = tab_manager.get_active_tab().map(|t| t.url.as_str()).unwrap_or("");
                                             omnibox_layout.update(&mut omnibox, w, url_to_display);
                                             ui::omnibox::render_omnibox_dynamic(&mut buffer, w, &omnibox_layout);
                                         }
-                                        
+
                                         let _ = buffer.present();
                                         dirty_region.reset();
                                     }
@@ -544,7 +598,7 @@ fn main() {
                             }
                         }
                     }
-                    
+
                     #[cfg(target_os = "windows")]
                     {
                         use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, SetWindowPos, SWP_NOZORDER, SWP_NOACTIVATE};
@@ -571,75 +625,124 @@ fn main() {
             }
             Event::AboutToWait => {
                 // Checar IPC Wry das abas normais
-                while let Ok(msg) = ipc_rx.try_recv() {
-                    let parts: Vec<&str> = msg.splitn(3, '|').collect();
-                    if parts.len() == 3 {
-                        if let Ok(tab_id) = parts[0].parse::<u32>() {
-                            let cmd = parts[1];
-                            let payload = parts[2].to_string();
-                            if cmd == "title" {
-                                if tab_manager.update_tab_title(tab_id, payload) {
-                                    dirty_region.invalidate_tabbar();
-                                } else {
-                                    eprintln!("AVISO: Comando IPC (title) recebido para aba inativa/removida: {}", tab_id);
+                while let Ok(envelope) = ipc_rx.try_recv() {
+                    let active_tab_id = tab_manager.get_active_tab().map(|tab| tab.id);
+                    match ipc::parse_ipc_message(&envelope.payload) {
+                        Ok(message) => match ipc::authorize_ipc_message(
+                            &message,
+                            active_tab_id,
+                            envelope.source_context,
+                        ) {
+                            Ok(()) => match message {
+                                ipc::BrowserIpcMessage::UpdateTitle { tab_id, title } => {
+                                    if tab_manager.update_tab_title(tab_id, title) {
+                                        dirty_region.invalidate_tabbar();
+                                    } else {
+                                        eprintln!(
+                                            "AVISO: Comando IPC (title) recebido para aba inativa/removida: {}",
+                                            tab_id
+                                        );
+                                    }
                                 }
-                            } else if cmd == "url" {
-                                if tab_manager.update_tab_url(tab_id, payload) {
+                                ipc::BrowserIpcMessage::UpdateUrl { tab_id, url } => {
+                                    if tab_manager.update_tab_url(tab_id, url) {
+                                        dirty_region.invalidate_omnibox();
+                                    } else {
+                                        eprintln!(
+                                            "AVISO: Comando IPC (url) recebido para aba inativa/removida: {}",
+                                            tab_id
+                                        );
+                                    }
+                                }
+                                ipc::BrowserIpcMessage::FocusOmnibox { tab_id: _ } => {
+                                    window.focus_window();
+                                    force_focus_window(&window);
+                                    if let Some(active) = tab_manager.get_active_tab() {
+                                        omnibox.focus(&active.url);
+                                    }
                                     dirty_region.invalidate_omnibox();
-                                } else {
-                                    eprintln!("AVISO: Comando IPC (url) recebido para aba inativa/removida: {}", tab_id);
                                 }
-                            } else if cmd == "focus_omnibox" {
-                                window.focus_window();
-                                force_focus_window(&window);
-                                if let Some(active) = tab_manager.get_active_tab() {
-                                    omnibox.focus(&active.url);
+                                ipc::BrowserIpcMessage::SaveConfig { .. } => {
+                                    eprintln!("AVISO DE SEGURANCA: IPC de configuracao recebido no canal de aba.");
                                 }
-                                dirty_region.invalidate_omnibox();
+                            },
+                            Err(e) => {
+                                eprintln!(
+                                    "AVISO DE SEGURANCA: IPC de aba rejeitado por autorizacao: {:?}",
+                                    e
+                                );
                             }
+                        },
+                        Err(e) => {
+                            eprintln!("AVISO DE SEGURANCA: IPC de aba rejeitado: {:?}", e);
                         }
-                    } else {
-                        eprintln!("AVISO DE SEGURANÇA: Aba tentou enviar um formato IPC suspeito ou não autorizado: {}", msg);
                     }
                 }
 
                 // Checar IPC Wry privilegiado (Janela de Configurações)
                 while let Ok(msg) = settings_rx.try_recv() {
-                    if let Some(payload) = msg.strip_prefix("save_config:") {
-                        if let Ok(mut new_config) = serde_json::from_str::<crate::config::BrowserConfig>(payload) {
-                            new_config.validate();
-                            let hw = new_config.hardware_acceleration;
-                            let search = new_config.search_engine;
+                    match ipc::parse_ipc_message(&msg) {
+                        Ok(message) => match ipc::authorize_ipc_message(
+                            &message,
+                            tab_manager.get_active_tab().map(|tab| tab.id),
+                            ipc::IpcSourceContext::SettingsWebView,
+                        ) {
+                            Ok(()) => match message {
+                                ipc::BrowserIpcMessage::SaveConfig { json } => {
+                                    if let Ok(mut new_config) =
+                                        serde_json::from_str::<crate::config::BrowserConfig>(&json)
+                                    {
+                                        new_config.validate();
+                                        let hw = new_config.hardware_acceleration;
+                                        let search = new_config.search_engine;
 
-                            let hw_changed = hw != browser_config.hardware_acceleration;
-                            browser_config.hardware_acceleration = hw;
-                            browser_config.search_engine = search;
-                            if let Err(e) = browser_config.save() {
-                                println!("Erro crítico ao salvar preferências: {}", e);
+                                        let hw_changed =
+                                            hw != browser_config.hardware_acceleration;
+                                        browser_config.hardware_acceleration = hw;
+                                        browser_config.search_engine = search;
+                                        if let Err(e) = browser_config.save() {
+                                            println!("Erro crítico ao salvar preferências: {}", e);
+                                        }
+                                        settings_window = None;
+                                        if hw_changed {
+                                            println!("⚠️ Aceleração de Hardware alterada. Reinicie o navegador para aplicar.");
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    eprintln!(
+                                        "AVISO DE SEGURANCA: IPC inesperado autorizado no canal de configuracoes."
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!(
+                                    "AVISO DE SEGURANCA: IPC de configuracoes rejeitado por autorizacao: {:?}",
+                                    e
+                                );
                             }
-                            settings_window = None;
-                            if hw_changed {
-                                println!("⚠️ Aceleração de Hardware alterada. Reinicie o navegador para aplicar.");
-                            }
+                        },
+                        Err(e) => {
+                            eprintln!("AVISO DE SEGURANCA: IPC de configuracoes rejeitado: {:?}", e);
                         }
                     }
                 }
-                
+
                 // Ostrimmer
                 let active_wv = tab_manager.get_active_tab().map(|t| t.id).and_then(|id| webviews.get(&id));
                 if let Ok(memory::os_trim::TrimAction::EmergencyFallback) = os_trimmer.try_trim(active_wv) {
                     if let Some(wv) = active_wv {
-                        let _ = wv.load_url("petal://newtab");
+                        wv.load_url("petal://newtab");
                     }
                 }
 
                 // Cursor blink
-                if omnibox.is_focused {
-                    if omnibox_layout.last_cursor_blink.elapsed().as_millis() >= 500 {
-                        omnibox_layout.cursor_blink_visible = !omnibox_layout.cursor_blink_visible;
-                        omnibox_layout.last_cursor_blink = std::time::Instant::now();
-                        dirty_region.invalidate_omnibox();
-                    }
+                if omnibox.is_focused
+                    && omnibox_layout.last_cursor_blink.elapsed().as_millis() >= 500
+                {
+                    omnibox_layout.cursor_blink_visible = !omnibox_layout.cursor_blink_visible;
+                    omnibox_layout.last_cursor_blink = std::time::Instant::now();
+                    dirty_region.invalidate_omnibox();
                 }
 
                 // Redraw coalescido: um único request_redraw para todos os eventos pendentes
@@ -654,5 +757,3 @@ fn main() {
         eprintln!("O loop de eventos principal encerrou de forma anormal: {}", e);
     }
 }
-
-
